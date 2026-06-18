@@ -1,4 +1,4 @@
-"""DFJP 起動エントリポイント。"""
+"""DFJP entry point."""
 
 from __future__ import annotations
 
@@ -15,8 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from PyQt6.QtWidgets import QApplication
 
-from gui import TranslationWindow
-from pipe_reader import PipeReader
+from gui import OverlayController
 from runtime_paths import (
     APP_NAME,
     DF_EXE_NAME,
@@ -29,7 +28,7 @@ from runtime_paths import (
 
 
 class StartupError(RuntimeError):
-    """ユーザーに表示すべき起動前エラー。"""
+    """Raised when startup prerequisites are not met."""
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -37,12 +36,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--game-dir",
         type=Path,
-        help="Dwarf Fortress.exe があるフォルダを明示する",
+        help="Folder containing Dwarf Fortress.exe",
     )
     parser.add_argument(
         "--prepare-only",
         action="store_true",
-        help="自動オフセット検出だけを行って終了する",
+        help="Only run offset detection, then exit",
     )
     return parser.parse_args(argv)
 
@@ -52,7 +51,7 @@ def normalize_game_dir(path: Path) -> Path:
     if resolved.is_file():
         if resolved.name.lower() != DF_EXE_NAME.lower():
             raise StartupError(
-                f"--game-dir にファイルを渡す場合は {DF_EXE_NAME} を指定してください: {resolved}"
+                f"When --game-dir points to a file, it must be {DF_EXE_NAME}: {resolved}"
             )
         return resolved.parent
     return resolved
@@ -80,10 +79,9 @@ def resolve_game_dir(explicit: Path | None) -> Path:
 
     searched = "\n".join(f"  - {candidate}" for candidate in candidates)
     raise StartupError(
-        f"{DF_EXE_NAME} が見つかりません。\n"
-        "ZIP の中身を Dwarf Fortress 本体フォルダへ展開するか、"
-        "--game-dir でフォルダを指定してください。\n\n"
-        f"検索先:\n{searched}"
+        f"{DF_EXE_NAME} was not found.\n"
+        "Extract the ZIP into your Dwarf Fortress folder, or pass --game-dir.\n\n"
+        f"Searched:\n{searched}"
     )
 
 
@@ -93,29 +91,30 @@ def prepare_runtime(game_dir: Path, prepare_only: bool) -> Path:
     output = offsets_path(game_dir)
 
     if not game_exe.is_file():
-        raise StartupError(f"{DF_EXE_NAME} が見つかりません: {game_exe}")
+        raise StartupError(f"{DF_EXE_NAME} was not found: {game_exe}")
     if not prepare_only and not hook_dll.is_file():
         raise StartupError(
-            f"{HOOK_DLL_NAME} が見つかりません: {hook_dll}\n"
-            "ZIP の中身を Dwarf Fortress 本体フォルダに展開してください。"
+            f"{HOOK_DLL_NAME} was not found: {hook_dll}\n"
+            "Place DFJP in the same folder as Dwarf Fortress.exe."
         )
 
     offsets_dir(game_dir).mkdir(parents=True, exist_ok=True)
+
     try:
         from tools.detect_offsets import ensure_offsets_file
 
         changed = ensure_offsets_file(game_exe, output)
     except Exception as exc:
         raise StartupError(
-            "RVA 自動検出に失敗しました。\n"
-            "この Dwarf Fortress バージョンで検出条件が変わった可能性があります。\n\n"
-            f"詳細: {exc}"
+            "Automatic RVA detection failed.\n"
+            "This Dwarf Fortress version may need updated detection logic.\n\n"
+            f"Details: {exc}"
         ) from exc
 
     if changed:
-        logging.info("オフセットファイルを更新しました: %s", output)
+        logging.info("Updated offsets file: %s", output)
     else:
-        logging.info("オフセットファイルは最新です: %s", output)
+        logging.info("Offsets file is already current: %s", output)
     return output
 
 
@@ -126,16 +125,14 @@ def show_startup_error(message: str) -> None:
         print(message, file=sys.stderr)
 
 
-def run_gui(argv: list[str]) -> int:
+def run_app(argv: list[str]) -> int:
     app = QApplication(argv)
     app.setApplicationName(APP_NAME)
+    app.setQuitOnLastWindowClosed(False)
 
-    window = TranslationWindow()
-    window.show()
-
-    reader = PipeReader(on_frame=window.on_frame)
-    reader.start()
-    app.aboutToQuit.connect(reader.stop)
+    controller = OverlayController(app)
+    app.aboutToQuit.connect(controller.shutdown)
+    app._dfjp_controller = controller  # type: ignore[attr-defined]
 
     return app.exec()
 
@@ -160,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.prepare_only:
         return 0
 
-    return run_gui(sys.argv)
+    return run_app(sys.argv)
 
 
 if __name__ == "__main__":

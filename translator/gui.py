@@ -1,81 +1,82 @@
-"""PyQt6 製の翻訳表示ウィンドウ。"""
+"""Overlay-based translation UI for Dwarf Fortress."""
 
+from __future__ import annotations
+
+import logging
 import queue
 import threading
-import logging
+import time
+from typing import Callable
 
-from PyQt6.QtCore import Qt, QTimer
+import win32api
+import win32con
+import win32gui
+from PyQt6.QtCore import QObject, QTimer, Qt
+from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QStatusBar,
-    QTableWidget, QTableWidgetItem, QHeaderView,
+    QApplication,
+    QHeaderView,
+    QLabel,
+    QMenu,
+    QSystemTrayIcon,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
+from pipe_reader import PipeReader
 from translator import Translator
 
 logger = logging.getLogger(__name__)
 
-# 結果キューの要素型: (原文リスト, 翻訳リスト)
 _Frame = tuple[list[str], list[str]]
+
+DF_WINDOW_TITLE = "Dwarf Fortress"
+CTRL_POLL_INTERVAL_MS = 50
+CTRL_TOGGLE_COOLDOWN_SECONDS = 0.40
+RESULT_POLL_INTERVAL_MS = 200
+WINDOW_SYNC_INTERVAL_MS = 150
 
 
 def _join_tokens(tokens: list[str]) -> str:
-    """トークンリストを結合する。先頭が句読点のトークンは前にスペースを入れない。"""
     if not tokens:
         return ""
+
     out = tokens[0]
-    for t in tokens[1:]:
-        if t and t[0] in ".,!?;:":
-            out += t
+    for token in tokens[1:]:
+        if token and token[0] in ".,!?;:":
+            out += token
         else:
-            out += " " + t
+            out += " " + token
     return out
 
 
 def _group_by_proximity(entries: list[tuple[str, int, int, int]]) -> list[str]:
-    """
-    GPS座標を使って (text, justify, x, y) リストをグループ化する。
-
-    Step 1 — 同一行(y)内でのx方向クラスタリング:
-        隣接トークン間のタイルギャップが MAX_INTRA_ROW_GAP(=1) を超えたら分割。
-        '.' ',' も rows に含め、ギャップ計算に参加させることで
-        "Meeting Area. Later" のような句読点をまたいだ結合を正しく行う。
-
-    Step 2 — 隣接行(y_gap=1)の結合:
-        以下の条件が揃ったとき前の行と結合（段落の折り返し）:
-        ・y_gap == 1
-        ・左余白(x_start)の差が MAX_X_MARGIN_DIFF 以内
-        ・pending が文末（.!?）で終わっていない
-        ・次行の先頭アルファベットが小文字
-        サイドバー検出: y_gap==0 かつ x が pending_x から大きく離れている場合は
-        pending を変えずに即時出力し、チュートリアル本文の結合を維持する。
-    """
-    MAX_INTRA_ROW_GAP = 1   # 単語間スペース=1タイルに合わせる（これを超えたら別要素）
-    MAX_X_MARGIN_DIFF = 4   # 隣接行の左余白の許容差（タイル数）
-    SIDEBAR_X_DIFF    = 8   # 同一行でこれ以上離れていればサイドバーとみなす
+    max_intra_row_gap = 1
+    max_x_margin_diff = 4
+    sidebar_x_diff = 8
 
     def is_kept(text: str) -> bool:
-        """アルファベット or 重要記号を含む場合のみ rows に追加する。"""
-        return any(c.isalpha() for c in text) or any(c in ".,!?->" for c in text)
+        return any(char.isalpha() for char in text) or any(char in ".,!?->" for char in text)
 
-    # y行 → [(x, text)]（アルファベットまたは重要句読点を含むもの）
     rows: dict[int, list[tuple[int, str]]] = {}
     for text, _justify, x, y in entries:
         if is_kept(text):
             rows.setdefault(y, []).append((x, text))
 
-    # Step 1: 各行をx順にソートし、大きなギャップでクラスター分割
-    segments: list[tuple[int, int, str]] = []  # (y, x_start, text)
+    segments: list[tuple[int, int, str]] = []
     for y in sorted(rows.keys()):
-        tokens = sorted(rows[y])  # x昇順
+        tokens = sorted(rows[y])
         cluster: list[str] = []
         x_start = tokens[0][0]
         prev_x, prev_len = tokens[0][0], 0
 
         for x, text in tokens:
             gap = x - prev_x - prev_len
-            if prev_len > 0 and gap > MAX_INTRA_ROW_GAP:
+            if prev_len > 0 and gap > max_intra_row_gap:
                 joined = _join_tokens(cluster)
-                if any(c.isalpha() for c in joined):
+                if any(char.isalpha() for char in joined):
                     segments.append((y, x_start, joined))
                 cluster = []
                 x_start = x
@@ -84,43 +85,39 @@ def _group_by_proximity(entries: list[tuple[str, int, int, int]]) -> list[str]:
 
         if cluster:
             joined = _join_tokens(cluster)
-            if any(c.isalpha() for c in joined):
+            if any(char.isalpha() for char in joined):
                 segments.append((y, x_start, joined))
 
     if not segments:
         return []
 
-    # Step 2: 隣接行を条件付きで結合
-    # pending: 現在積み上げ中のセグメント（確定前）
-    # サイドバー（同一y・遠いx）は pending を変えずに即出力する
     result: list[str] = []
     pending_y, pending_x, pending_text = segments[0]
 
     for y, x, text in segments[1:]:
         y_gap = y - pending_y
         x_margin_diff = abs(x - pending_x)
-        ends_sent = pending_text[-1] in ".!?" if pending_text else True
-        ends_with_arrow = pending_text.endswith('->')
-        pending_has_internal_punct = any(c in ",." for c in pending_text[:-1])
-        first_alpha = next((c for c in text if c.isalpha()), None)
+        ends_sentence = pending_text[-1] in ".!?" if pending_text else True
+        ends_with_arrow = pending_text.endswith("->")
+        pending_has_internal_punct = any(char in ",." for char in pending_text[:-1])
+        first_alpha = next((char for char in text if char.isalpha()), None)
         is_continuation = (
             (first_alpha is not None and first_alpha.islower())
             or ends_with_arrow
-            or (not ends_sent and pending_has_internal_punct)
+            or (not ends_sentence and pending_has_internal_punct)
         )
 
-        if (y_gap == 1
-                and x_margin_diff <= MAX_X_MARGIN_DIFF
-                and not ends_sent
-                and is_continuation):
-            # 段落の折り返し → pending に結合
-            pending_text = pending_text + " " + text
+        if (
+            y_gap == 1
+            and x_margin_diff <= max_x_margin_diff
+            and not ends_sentence
+            and is_continuation
+        ):
+            pending_text = f"{pending_text} {text}"
             pending_y = y
-        elif y_gap == 0 and x_margin_diff > SIDEBAR_X_DIFF:
-            # 同一行の遠いx（サイドバー要素） → pending を変えず即出力
+        elif y_gap == 0 and x_margin_diff > sidebar_x_diff:
             result.append(text)
         else:
-            # 新しいセクション → pending を確定して切り替え
             result.append(pending_text)
             pending_y, pending_x, pending_text = y, x, text
 
@@ -128,112 +125,311 @@ def _group_by_proximity(entries: list[tuple[str, int, int, int]]) -> list[str]:
     return result
 
 
-class TranslationWindow(QMainWindow):
-    """
-    DF の隣に置く翻訳オーバーレイウィンドウ。
-    原文列・翻訳列の 2 列テーブルで表示し、原文列でソートできる。
-    """
+def _find_df_window() -> int | None:
+    matches: list[int] = []
 
+    def callback(hwnd: int, _extra) -> None:
+        if not win32gui.IsWindowVisible(hwnd):
+            return
+        title = win32gui.GetWindowText(hwnd)
+        if DF_WINDOW_TITLE in title:
+            matches.append(hwnd)
+
+    win32gui.EnumWindows(callback, None)
+    if not matches:
+        return None
+
+    foreground = win32gui.GetForegroundWindow()
+    if foreground in matches:
+        return foreground
+    return matches[0]
+
+
+def _is_ctrl_down() -> bool:
+    return bool(
+        win32api.GetAsyncKeyState(win32con.VK_LCONTROL) & 0x8000
+        or win32api.GetAsyncKeyState(win32con.VK_RCONTROL) & 0x8000
+    )
+
+
+def _build_tray_icon(text_color: QColor) -> QIcon:
+    size = 64
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(0, 0, 0))
+    painter.drawRoundedRect(0, 0, size - 1, size - 1, 10, 10)
+
+    font = QFont("Segoe UI", 34, QFont.Weight.Bold)
+    painter.setFont(font)
+    painter.setPen(text_color)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "D")
+    painter.end()
+
+    return QIcon(pixmap)
+
+
+class OverlayWindow(QWidget):
     def __init__(self) -> None:
-        super().__init__()
-        self._translator = Translator()
-        self._raw_queue: queue.Queue[list[str]] = queue.Queue(maxsize=4)
-        self._result_queue: queue.Queue[_Frame] = queue.Queue(maxsize=4)
+        super().__init__(
+            None,
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus,
+        )
+        self._last_hwnd: int | None = None
         self._connected = False
-        self._last_frame: _Frame | None = None
-        self._sort_column = -1
-        self._sort_order: Qt.SortOrder | None = None
+        self._overlay_enabled = True
 
-        self._setup_ui()
-        self._start_translation_worker()
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-        self._poll_timer = QTimer(self)
-        self._poll_timer.timeout.connect(self._poll_result_queue)
-        self._poll_timer.start(200)
+        self._panel = QWidget(self)
+        self._panel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._panel.setStyleSheet(
+            """
+            QWidget {
+                background-color: rgba(18, 18, 18, 180);
+                border: 1px solid rgba(255, 255, 255, 35);
+                border-radius: 10px;
+            }
+            """
+        )
 
-    # ------------------------------------------------------------------
-    # UI セットアップ
-    # ------------------------------------------------------------------
-    def _setup_ui(self) -> None:
-        self.setWindowTitle("DF 日本語翻訳")
-        self.setMinimumSize(860, 600)
-        self.resize(960, 700)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        panel_layout = QVBoxLayout(self._panel)
+        panel_layout.setContentsMargins(12, 12, 12, 12)
+        panel_layout.setSpacing(8)
 
-        central = QWidget()
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(6, 6, 6, 4)
-        layout.setSpacing(0)
+        self._title = QLabel("DFJP Overlay")
+        self._title.setStyleSheet(
+            "color: #f0f0f0; font-size: 15px; font-weight: 600; background: transparent; border: none;"
+        )
+        self._title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        panel_layout.addWidget(self._title)
+
+        self._status = QLabel("Waiting for Dwarf Fortress...")
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet(
+            "color: #c8c8c8; font-size: 12px; background: transparent; border: none;"
+        )
+        self._status.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        panel_layout.addWidget(self._status)
 
         self._table = QTableWidget()
         self._table.setColumnCount(2)
-        self._table.setHorizontalHeaderLabels(["原文", "翻訳"])
-
-        # 両列ともドラッグで幅変更できる Interactive モード
-        header = self._table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
-        header.setStretchLastSection(True)  # 翻訳列は余白を埋めつつドラッグ調整も可
-        self._table.setColumnWidth(0, 380)  # 原文列の初期幅
-        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-
+        self._table.setHorizontalHeaderLabels(["Original", "Japanese"])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._table.setAlternatingRowColors(True)
-        self._table.setSortingEnabled(False)
+        self._table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._table.setWordWrap(True)
-        header.setSortIndicatorShown(False)
-        header.sectionClicked.connect(self._on_header_clicked)
+        self._table.setShowGrid(True)
+        self._table.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
-        self._table.setStyleSheet("""
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._table.setColumnWidth(0, 280)
+
+        self._table.setStyleSheet(
+            """
             QTableWidget {
-                background: #1e1e1e;
-                color: #d4d4d4;
-                gridline-color: #3a3a3a;
+                background-color: rgba(0, 0, 0, 80);
+                color: #f0f0f0;
+                gridline-color: rgba(255, 255, 255, 28);
+                border: none;
                 font-family: 'Meiryo UI', 'Yu Gothic UI', sans-serif;
                 font-size: 13px;
             }
-            QTableWidget::item:alternate { background: #252526; }
-            QTableWidget::item:selected  { background: #094771; color: #ffffff; }
+            QTableWidget::item {
+                background-color: rgba(35, 35, 35, 95);
+                border: none;
+                padding: 4px;
+            }
+            QTableWidget::item:alternate {
+                background-color: rgba(44, 44, 44, 95);
+            }
             QHeaderView::section {
-                background: #2d2d2d;
-                color: #cccccc;
+                background-color: rgba(255, 255, 255, 18);
+                color: #f0f0f0;
                 padding: 4px 8px;
                 border: none;
-                border-right: 1px solid #3a3a3a;
-                border-bottom: 1px solid #3a3a3a;
-                font-weight: bold;
+                border-bottom: 1px solid rgba(255, 255, 255, 25);
             }
-        """)
+            """
+        )
+        panel_layout.addWidget(self._table, stretch=1)
 
-        layout.addWidget(self._table)
-        self.setCentralWidget(central)
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        margin = 16
+        panel_width = max(420, min(760, int(self.width() * 0.42)))
+        panel_height = max(220, self.height() - margin * 2)
+        x = max(margin, self.width() - panel_width - margin)
+        self._panel.setGeometry(x, margin, panel_width, panel_height)
 
-        self._status_bar = QStatusBar()
-        self.setStatusBar(self._status_bar)
-        self._update_status()
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._apply_click_through)
 
-    # ------------------------------------------------------------------
-    # PipeReader から呼ばれるコールバック（非 GUI スレッドから呼ばれる）
-    # ------------------------------------------------------------------
+    def set_status(self, text: str) -> None:
+        self._status.setText(text)
+
+    def set_overlay_enabled(self, enabled: bool) -> None:
+        self._overlay_enabled = enabled
+
+    def set_rows(self, originals: list[str], translated: list[str]) -> None:
+        self._table.setRowCount(0)
+        for original, translation in zip(originals, translated):
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+            original_item = QTableWidgetItem(original)
+            translation_item = QTableWidgetItem(translation)
+            original_item.setFlags(original_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            translation_item.setFlags(translation_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 0, original_item)
+            self._table.setItem(row, 1, translation_item)
+        self._table.resizeRowsToContents()
+
+    def sync_to_window(self, hwnd: int | None, enabled: bool) -> None:
+        self._last_hwnd = hwnd
+        self._overlay_enabled = enabled
+
+        if not enabled or hwnd is None:
+            self.hide()
+            return
+
+        try:
+            if not win32gui.IsWindow(hwnd) or win32gui.IsIconic(hwnd):
+                self.hide()
+                return
+
+            client = win32gui.GetClientRect(hwnd)
+            left, top = win32gui.ClientToScreen(hwnd, (client[0], client[1]))
+            right, bottom = win32gui.ClientToScreen(hwnd, (client[2], client[3]))
+            width = max(0, right - left)
+            height = max(0, bottom - top)
+            if width <= 0 or height <= 0:
+                self.hide()
+                return
+
+            if self.geometry().x() != left or self.geometry().y() != top or self.width() != width or self.height() != height:
+                self.setGeometry(left, top, width, height)
+
+            if not self.isVisible():
+                self.show()
+            self._apply_click_through()
+        except Exception as exc:
+            logger.debug("Failed to sync overlay to DF window: %s", exc)
+            self.hide()
+
+    def _apply_click_through(self) -> None:
+        try:
+            hwnd = int(self.winId())
+            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            ex_style |= (
+                win32con.WS_EX_LAYERED
+                | win32con.WS_EX_TRANSPARENT
+                | win32con.WS_EX_TOOLWINDOW
+                | win32con.WS_EX_NOACTIVATE
+            )
+            ex_style &= ~win32con.WS_EX_APPWINDOW
+            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style)
+            win32gui.SetWindowPos(
+                hwnd,
+                win32con.HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                win32con.SWP_NOMOVE
+                | win32con.SWP_NOSIZE
+                | win32con.SWP_NOACTIVATE
+                | win32con.SWP_SHOWWINDOW,
+            )
+        except Exception as exc:
+            logger.debug("Failed to apply click-through styles: %s", exc)
+
+
+class OverlayController(QObject):
+    def __init__(self, app: QApplication) -> None:
+        super().__init__()
+        self._app = app
+        self._translator = Translator()
+        self._overlay = OverlayWindow()
+        self._reader = PipeReader(on_frame=self.on_frame)
+        self._raw_queue: queue.Queue[list[str]] = queue.Queue(maxsize=4)
+        self._result_queue: queue.Queue[_Frame] = queue.Queue(maxsize=4)
+        self._overlay_enabled = True
+        self._connected = False
+        self._ctrl_was_down = False
+        self._last_ctrl_toggle = 0.0
+        self._last_window_found = False
+        self._last_hwnd: int | None = None
+
+        self._tray_icon_on = _build_tray_icon(QColor(255, 255, 255))
+        self._tray_icon_off = _build_tray_icon(QColor(140, 140, 140))
+        self._tray = self._create_tray()
+
+        self._start_translation_worker()
+        self._start_timers()
+        self._reader.start()
+        self._refresh_overlay_state()
+
+    def shutdown(self) -> None:
+        self._reader.stop()
+        self._tray.hide()
+        self._overlay.hide()
+
     def on_frame(self, entries: list[tuple[str, int, int, int]]) -> None:
         grouped = _group_by_proximity(entries)
         if not grouped:
             return
-        if not self._connected:
-            self._connected = True
+
+        self._connected = True
         try:
             self._raw_queue.put_nowait(grouped)
         except queue.Full:
             pass
 
-    # ------------------------------------------------------------------
-    # 翻訳ワーカー（別スレッド）
-    # ------------------------------------------------------------------
+    def toggle_overlay(self, source: str) -> None:
+        self._overlay_enabled = not self._overlay_enabled
+        logger.info("Overlay toggled %s by %s", "on" if self._overlay_enabled else "off", source)
+        self._refresh_overlay_state()
+
+    def _create_tray(self) -> QSystemTrayIcon:
+        tray = QSystemTrayIcon(self._tray_icon_on, self._app)
+        tray.setToolTip("DFJP overlay: ON")
+        tray.activated.connect(self._on_tray_activated)
+
+        menu = QMenu()
+        self._toggle_action = QAction("Turn overlay off", menu)
+        self._toggle_action.triggered.connect(lambda: self.toggle_overlay("tray menu"))
+        menu.addAction(self._toggle_action)
+
+        quit_action = QAction("Exit", menu)
+        quit_action.triggered.connect(self._app.quit)
+        menu.addSeparator()
+        menu.addAction(quit_action)
+
+        tray.setContextMenu(menu)
+        tray.show()
+        return tray
+
     def _start_translation_worker(self) -> None:
-        t = threading.Thread(target=self._translation_worker, daemon=True, name="translator")
-        t.start()
+        worker = threading.Thread(
+            target=self._translation_worker,
+            daemon=True,
+            name="translator",
+        )
+        worker.start()
 
     def _translation_worker(self) -> None:
         while True:
@@ -244,9 +440,19 @@ class TranslationWindow(QMainWindow):
             except queue.Full:
                 pass
 
-    # ------------------------------------------------------------------
-    # GUI ポーリング（QTimer）
-    # ------------------------------------------------------------------
+    def _start_timers(self) -> None:
+        self._result_timer = QTimer(self)
+        self._result_timer.timeout.connect(self._poll_result_queue)
+        self._result_timer.start(RESULT_POLL_INTERVAL_MS)
+
+        self._sync_timer = QTimer(self)
+        self._sync_timer.timeout.connect(self._sync_overlay_to_df)
+        self._sync_timer.start(WINDOW_SYNC_INTERVAL_MS)
+
+        self._ctrl_timer = QTimer(self)
+        self._ctrl_timer.timeout.connect(self._poll_ctrl_key)
+        self._ctrl_timer.start(CTRL_POLL_INTERVAL_MS)
+
     def _poll_result_queue(self) -> None:
         latest: _Frame | None = None
         while True:
@@ -256,54 +462,51 @@ class TranslationWindow(QMainWindow):
                 break
 
         if latest is not None:
-            self._display(*latest)
-            self._update_status()
+            originals, translated = latest
+            self._overlay.set_rows(originals, translated)
+            self._refresh_overlay_state()
 
-    def _display(self, originals: list[str], translated: list[str]) -> None:
-        self._last_frame = (originals, translated)
-        self._render_rows(originals, translated)
+    def _sync_overlay_to_df(self) -> None:
+        hwnd = _find_df_window()
+        self._last_hwnd = hwnd
+        self._last_window_found = hwnd is not None
+        self._overlay.sync_to_window(hwnd, self._overlay_enabled)
+        self._refresh_overlay_state()
 
-    def _render_rows(self, originals: list[str], translated: list[str]) -> None:
-        self._table.setRowCount(0)
-        for orig, trans in zip(originals, translated):
-            row = self._table.rowCount()
-            self._table.insertRow(row)
-            orig_item = QTableWidgetItem(orig)
-            trans_item = QTableWidgetItem(trans)
-            orig_item.setFlags(orig_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            trans_item.setFlags(trans_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self._table.setItem(row, 0, orig_item)
-            self._table.setItem(row, 1, trans_item)
-        if self._sort_column >= 0:
-            self._table.sortByColumn(self._sort_column, self._sort_order)
-        self._table.resizeRowsToContents()
+    def _poll_ctrl_key(self) -> None:
+        ctrl_down = _is_ctrl_down()
+        now = time.monotonic()
+        if (
+            ctrl_down
+            and not self._ctrl_was_down
+            and now - self._last_ctrl_toggle >= CTRL_TOGGLE_COOLDOWN_SECONDS
+        ):
+            self.toggle_overlay("Ctrl")
+            self._last_ctrl_toggle = now
+        self._ctrl_was_down = ctrl_down
 
-    # ------------------------------------------------------------------
-    # ヘッダークリックによるソート（位置順 → 昇順 → 降順 → 位置順）
-    # ------------------------------------------------------------------
-    def _on_header_clicked(self, col: int) -> None:
-        header = self._table.horizontalHeader()
-        if self._sort_column == col:
-            if self._sort_order == Qt.SortOrder.AscendingOrder:
-                self._sort_order = Qt.SortOrder.DescendingOrder
-            else:
-                # 降順 → 位置順に戻す
-                self._sort_column = -1
-                self._sort_order = None
-                header.setSortIndicatorShown(False)
-                if self._last_frame:
-                    self._render_rows(*self._last_frame)
-                return
-        else:
-            self._sort_column = col
-            self._sort_order = Qt.SortOrder.AscendingOrder
+    def _refresh_overlay_state(self) -> None:
+        state = "ON" if self._overlay_enabled else "OFF"
+        connection = "connected" if self._connected else "waiting for text"
+        window_state = "DF detected" if self._last_window_found else "waiting for Dwarf Fortress"
+        status = f"Overlay {state} · {window_state} · {connection} · {self._translator.engine_name}"
 
-        self._table.sortByColumn(self._sort_column, self._sort_order)
-        header.setSortIndicatorShown(True)
-        header.setSortIndicator(self._sort_column, self._sort_order)
+        self._overlay.set_overlay_enabled(self._overlay_enabled)
+        self._overlay.set_status(status)
+        self._toggle_action.setText(
+            "Turn overlay off" if self._overlay_enabled else "Turn overlay on"
+        )
+        self._tray.setIcon(self._tray_icon_on if self._overlay_enabled else self._tray_icon_off)
+        self._tray.setToolTip(f"DFJP overlay: {state}\n{window_state}\n{connection}")
 
-    def _update_status(self) -> None:
-        if self._connected:
-            self._status_bar.showMessage(f"接続中 ・ {self._translator.engine_name}")
-        else:
-            self._status_bar.showMessage("DFの起動を待っています…")
+        if not self._overlay_enabled:
+            self._overlay.hide()
+        elif self._last_hwnd is not None:
+            self._overlay.sync_to_window(self._last_hwnd, True)
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self.toggle_overlay("tray click")
