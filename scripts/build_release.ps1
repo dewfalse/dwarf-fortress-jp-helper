@@ -40,6 +40,28 @@ function Resolve-CmakeExe {
         Select-Object -First 1
 }
 
+function Ensure-HookBuildTree {
+    param(
+        [string]$CmakeExe,
+        [string]$HookDir
+    )
+
+    $BuildDir = Join-Path $HookDir "build"
+    $CacheFile = Join-Path $BuildDir "CMakeCache.txt"
+    if (Test-Path -LiteralPath $CacheFile -PathType Leaf) {
+        return
+    }
+
+    New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
+
+    & $CmakeExe -S $HookDir -B $BuildDir `
+        -DCMAKE_BUILD_TYPE=Release `
+        -DVCPKG_TARGET_TRIPLET=x64-windows-static
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to configure hook/build with CMake."
+    }
+}
+
 function Assert-PathInside {
     param(
         [string]$BasePath,
@@ -79,6 +101,8 @@ if (-not $SkipHookBuild) {
     if (-not $CmakeExe) {
         throw "cmake.exe not found. Install CMake or pass -SkipHookBuild."
     }
+
+    Ensure-HookBuildTree -CmakeExe $CmakeExe -HookDir $HookDir
 
     & $CmakeExe --build (Join-Path $HookDir "build") --config Release
     if ($LASTEXITCODE -ne 0) {
