@@ -71,8 +71,11 @@ powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1
 
 - `dist/DFJP.zip`
 
+## License
+
+MIT License
+
 ## 注意
 
 - `dfhooks.dll` を使うため、同名 DLL を利用する他ツールとは競合する場合があります。
 - 本プロジェクトは外部翻訳補助ツールであり、ゲーム本体の描画を直接日本語化するものではありません。
-- ライセンスはまだ明示していません。必要に応じて追加してください。
