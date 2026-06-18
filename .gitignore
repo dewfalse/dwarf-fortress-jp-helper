@@ -1,0 +1,37 @@
+# C++ ビルド成果物
+hook/build/
+hook/out/
+build/
+dist/
+*.dll
+*.lib
+*.exp
+*.pdb
+*.obj
+*.ilk
+
+# vcpkg インストール済みパッケージ（vcpkg.json で再現できる）
+hook/vcpkg_installed/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ゲームプレイで蓄積される翻訳キャッシュ（環境ごとに異なるため除外）
+translator/translation_cache.json
+translator/debug.log
+
+# 実行時データ（オフセットファイルはユーザーが配置する）
+dfint-data/*.toml
+
+# IDE
+.vscode/
+.idea/
+*.user
+
+# OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,13 @@
+[translator]
+# 使用する翻訳エンジン: "google" または "deepl"
+engine = "google"
+# 翻訳先言語コード
+target_language = "ja"
+
+[deepl]
+# DeepL API キー。環境変数 DEEPL_API_KEY でも指定できる（こちらが優先）。
+api_key = ""
+
+[debug]
+# true にすると受信テキストを debug.log に記録する
+log = true
