@@ -454,36 +454,46 @@ class OverlayController(QObject):
             for span in block.spans
         )
 
-        cols = max(MIN_COLUMNS, max_col + 2)
-        rows = max(MIN_ROWS, max_row + 2)
+        cols = max(MIN_COLUMNS, max_col + 1)
+        rows = max(MIN_ROWS, max_row + 1)
+        cell_width = max(1.0, client_rect.width() / cols)
+        cell_height = max(1.0, client_rect.height() / rows)
 
-        rel_x = max(0, cursor_pos.x() - client_rect.left())
-        rel_y = max(0, cursor_pos.y() - client_rect.top())
-        tile_x = int(rel_x / max(1, client_rect.width()) * cols)
-        tile_y = int(rel_y / max(1, client_rect.height()) * rows)
-
-        best: tuple[int, int, str] | None = None
+        best: tuple[float, str] | None = None
         for block, translation in self._current_frame:
-            for span in block.spans:
-                row_distance = abs(span.y - tile_y)
-                if row_distance > 1:
-                    continue
+            left = min(span.x_start for span in block.spans) * cell_width + client_rect.left()
+            right = (max(span.x_end for span in block.spans) + 1) * cell_width + client_rect.left()
+            top = min(span.y for span in block.spans) * cell_height + client_rect.top()
+            bottom = (max(span.y for span in block.spans) + 1) * cell_height + client_rect.top()
 
-                x_distance = 0
-                if tile_x < span.x_start:
-                    x_distance = span.x_start - tile_x
-                elif tile_x > span.x_end:
-                    x_distance = tile_x - span.x_end
+            hover_rect = QRect(
+                int(left - cell_width * 1.5),
+                int(top - cell_height * 0.8),
+                int(max(1.0, (right - left) + cell_width * 3.0)),
+                int(max(1.0, (bottom - top) + cell_height * 1.6)),
+            )
 
-                if row_distance == 0 and x_distance == 0:
-                    return translation
+            if hover_rect.contains(cursor_pos):
+                return translation
 
-                score = row_distance * 1000 + x_distance
-                if best is None or score < best[0]:
-                    best = (score, span.y, translation)
+            dx = 0.0
+            if cursor_pos.x() < hover_rect.left():
+                dx = hover_rect.left() - cursor_pos.x()
+            elif cursor_pos.x() > hover_rect.right():
+                dx = cursor_pos.x() - hover_rect.right()
 
-        if best and best[0] <= 3:
-            return best[2]
+            dy = 0.0
+            if cursor_pos.y() < hover_rect.top():
+                dy = hover_rect.top() - cursor_pos.y()
+            elif cursor_pos.y() > hover_rect.bottom():
+                dy = cursor_pos.y() - hover_rect.bottom()
+
+            distance = dx + dy * 2.5
+            if best is None or distance < best[0]:
+                best = (distance, translation)
+
+        if best and best[0] <= cell_width * 10:
+            return best[1]
         return None
 
     def _poll_ctrl_key(self) -> None:
