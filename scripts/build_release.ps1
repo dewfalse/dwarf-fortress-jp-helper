@@ -78,9 +78,9 @@ function Ensure-HookBuildTree {
     New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 
     & $CmakeExe -S $HookDir -B $BuildDir `
-        -DCMAKE_TOOLCHAIN_FILE=$VcpkgToolchain `
-        -DCMAKE_BUILD_TYPE=Release `
-        -DVCPKG_TARGET_TRIPLET=x64-windows-static
+        "-DCMAKE_TOOLCHAIN_FILE=$VcpkgToolchain" `
+        "-DCMAKE_BUILD_TYPE=Release" `
+        "-DVCPKG_TARGET_TRIPLET=x64-windows-static"
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to configure hook/build with CMake."
     }
