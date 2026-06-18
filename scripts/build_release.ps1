@@ -40,21 +40,45 @@ function Resolve-CmakeExe {
         Select-Object -First 1
 }
 
+function Resolve-VcpkgToolchain {
+    $Candidates = @()
+
+    if ($env:VCPKG_ROOT) {
+        $Candidates += (Join-Path $env:VCPKG_ROOT "scripts\buildsystems\vcpkg.cmake")
+    }
+
+    $Candidates += @(
+        "C:\vcpkg\scripts\buildsystems\vcpkg.cmake",
+        (Join-Path $env:LOCALAPPDATA "vcpkg\scripts\buildsystems\vcpkg.cmake"),
+        (Join-Path $env:USERPROFILE "vcpkg\scripts\buildsystems\vcpkg.cmake")
+    )
+
+    return $Candidates |
+        Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } |
+        Select-Object -First 1
+}
+
 function Ensure-HookBuildTree {
     param(
         [string]$CmakeExe,
-        [string]$HookDir
+        [string]$HookDir,
+        [string]$VcpkgToolchain
     )
 
     $BuildDir = Join-Path $HookDir "build"
     $CacheFile = Join-Path $BuildDir "CMakeCache.txt"
     if (Test-Path -LiteralPath $CacheFile -PathType Leaf) {
-        return
+        $CacheText = Get-Content -LiteralPath $CacheFile -Raw -ErrorAction SilentlyContinue
+        if ($CacheText -and $CacheText.Contains($VcpkgToolchain)) {
+            return
+        }
+        Remove-Item -LiteralPath $BuildDir -Recurse -Force
     }
 
     New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 
     & $CmakeExe -S $HookDir -B $BuildDir `
+        -DCMAKE_TOOLCHAIN_FILE=$VcpkgToolchain `
         -DCMAKE_BUILD_TYPE=Release `
         -DVCPKG_TARGET_TRIPLET=x64-windows-static
     if ($LASTEXITCODE -ne 0) {
@@ -101,8 +125,12 @@ if (-not $SkipHookBuild) {
     if (-not $CmakeExe) {
         throw "cmake.exe not found. Install CMake or pass -SkipHookBuild."
     }
+    $VcpkgToolchain = Resolve-VcpkgToolchain
+    if (-not $VcpkgToolchain) {
+        throw "vcpkg toolchain not found. Set VCPKG_ROOT or install vcpkg."
+    }
 
-    Ensure-HookBuildTree -CmakeExe $CmakeExe -HookDir $HookDir
+    Ensure-HookBuildTree -CmakeExe $CmakeExe -HookDir $HookDir -VcpkgToolchain $VcpkgToolchain
 
     & $CmakeExe --build (Join-Path $HookDir "build") --config Release
     if ($LASTEXITCODE -ne 0) {
