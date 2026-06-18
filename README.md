@@ -4,6 +4,12 @@ Windows 用の Dwarf Fortress 日本語プレイ補助ツールです。
 
 このプロジェクトは Dwarf Fortress 本体のテキスト描画関数をフックし、ゲーム内で表示された英語テキストを別ウインドウに集約して、日本語訳を表示します。Dwarf Fortress 本体の日本語化そのものではなく、外部の翻訳支援ウインドウを表示する補助ツールです。
 
+## Screenshot
+
+ゲーム画面と翻訳ウインドウを並べた動作例です。
+
+![Dwarf Fortress and DFJP translation window](docs/screenshot_01.png)
+
 ## 主な構成
 
 - `hook/`
