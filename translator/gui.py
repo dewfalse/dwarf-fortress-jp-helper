@@ -1,42 +1,54 @@
-"""Overlay-based translation UI for Dwarf Fortress."""
+"""Cursor-following overlay UI for Dwarf Fortress."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import logging
 import queue
 import threading
 import time
-from typing import Callable
 
 import win32api
 import win32con
 import win32gui
-from PyQt6.QtCore import QObject, QTimer, Qt
-from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
-from PyQt6.QtWidgets import (
-    QApplication,
-    QHeaderView,
-    QLabel,
-    QMenu,
-    QSystemTrayIcon,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtCore import QObject, QPoint, QRect, QTimer, Qt
+from PyQt6.QtGui import QAction, QColor, QCursor, QFont, QFontMetrics, QIcon, QPainter, QPixmap
+from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QSystemTrayIcon, QVBoxLayout, QWidget
 
 from pipe_reader import PipeReader
 from translator import Translator
 
 logger = logging.getLogger(__name__)
 
-_Frame = tuple[list[str], list[str]]
-
 DF_WINDOW_TITLE = "Dwarf Fortress"
+RESULT_POLL_INTERVAL_MS = 200
+WINDOW_SYNC_INTERVAL_MS = 75
 CTRL_POLL_INTERVAL_MS = 50
 CTRL_TOGGLE_COOLDOWN_SECONDS = 0.40
-RESULT_POLL_INTERVAL_MS = 200
-WINDOW_SYNC_INTERVAL_MS = 150
+CURSOR_OFFSET_X = 22
+CURSOR_OFFSET_Y = 10
+MIN_COLUMNS = 80
+MIN_ROWS = 25
+TOOLTIP_MARGIN = 12
+
+
+@dataclass(frozen=True)
+class Span:
+    y: int
+    x_start: int
+    x_end: int
+
+
+@dataclass(frozen=True)
+class TextBlock:
+    text: str
+    spans: tuple[Span, ...] = field(default_factory=tuple)
+
+    def matches(self, tile_x: int, tile_y: int) -> bool:
+        return any(span.y == tile_y and span.x_start <= tile_x <= span.x_end for span in self.spans)
+
+
+_TranslatedFrame = list[tuple[TextBlock, str]]
 
 
 def _join_tokens(tokens: list[str]) -> str:
@@ -52,7 +64,7 @@ def _join_tokens(tokens: list[str]) -> str:
     return out
 
 
-def _group_by_proximity(entries: list[tuple[str, int, int, int]]) -> list[str]:
+def _group_text_blocks(entries: list[tuple[str, int, int, int]]) -> list[TextBlock]:
     max_intra_row_gap = 1
     max_x_margin_diff = 4
     sidebar_x_diff = 8
@@ -65,38 +77,46 @@ def _group_by_proximity(entries: list[tuple[str, int, int, int]]) -> list[str]:
         if is_kept(text):
             rows.setdefault(y, []).append((x, text))
 
-    segments: list[tuple[int, int, str]] = []
+    row_segments: list[tuple[int, int, int, str]] = []
     for y in sorted(rows.keys()):
         tokens = sorted(rows[y])
         cluster: list[str] = []
         x_start = tokens[0][0]
-        prev_x, prev_len = tokens[0][0], 0
+        prev_x = tokens[0][0]
+        prev_len = 0
+        x_end = x_start
 
         for x, text in tokens:
             gap = x - prev_x - prev_len
             if prev_len > 0 and gap > max_intra_row_gap:
                 joined = _join_tokens(cluster)
                 if any(char.isalpha() for char in joined):
-                    segments.append((y, x_start, joined))
+                    row_segments.append((y, x_start, x_end, joined))
                 cluster = []
                 x_start = x
+                x_end = x
             cluster.append(text)
-            prev_x, prev_len = x, len(text)
+            prev_x = x
+            prev_len = len(text)
+            x_end = max(x_end, x + max(1, len(text)))
 
         if cluster:
             joined = _join_tokens(cluster)
             if any(char.isalpha() for char in joined):
-                segments.append((y, x_start, joined))
+                row_segments.append((y, x_start, x_end, joined))
 
-    if not segments:
+    if not row_segments:
         return []
 
-    result: list[str] = []
-    pending_y, pending_x, pending_text = segments[0]
+    blocks: list[TextBlock] = []
+    pending_text = row_segments[0][3]
+    pending_spans = [Span(row_segments[0][0], row_segments[0][1], row_segments[0][2])]
+    pending_y = row_segments[0][0]
+    pending_x = row_segments[0][1]
 
-    for y, x, text in segments[1:]:
+    for y, x_start, x_end, text in row_segments[1:]:
         y_gap = y - pending_y
-        x_margin_diff = abs(x - pending_x)
+        x_margin_diff = abs(x_start - pending_x)
         ends_sentence = pending_text[-1] in ".!?" if pending_text else True
         ends_with_arrow = pending_text.endswith("->")
         pending_has_internal_punct = any(char in ",." for char in pending_text[:-1])
@@ -114,15 +134,19 @@ def _group_by_proximity(entries: list[tuple[str, int, int, int]]) -> list[str]:
             and is_continuation
         ):
             pending_text = f"{pending_text} {text}"
+            pending_spans.append(Span(y, x_start, x_end))
             pending_y = y
         elif y_gap == 0 and x_margin_diff > sidebar_x_diff:
-            result.append(text)
+            blocks.append(TextBlock(text=text, spans=(Span(y, x_start, x_end),)))
         else:
-            result.append(pending_text)
-            pending_y, pending_x, pending_text = y, x, text
+            blocks.append(TextBlock(text=pending_text, spans=tuple(pending_spans)))
+            pending_text = text
+            pending_spans = [Span(y, x_start, x_end)]
+            pending_y = y
+            pending_x = x_start
 
-    result.append(pending_text)
-    return result
+    blocks.append(TextBlock(text=pending_text, spans=tuple(pending_spans)))
+    return blocks
 
 
 def _find_df_window() -> int | None:
@@ -172,7 +196,22 @@ def _build_tray_icon(text_color: QColor) -> QIcon:
     return QIcon(pixmap)
 
 
-class OverlayWindow(QWidget):
+def _client_rect_screen(hwnd: int) -> QRect | None:
+    try:
+        if not win32gui.IsWindow(hwnd) or win32gui.IsIconic(hwnd):
+            return None
+        client = win32gui.GetClientRect(hwnd)
+        left, top = win32gui.ClientToScreen(hwnd, (client[0], client[1]))
+        right, bottom = win32gui.ClientToScreen(hwnd, (client[2], client[3]))
+        if right <= left or bottom <= top:
+            return None
+        return QRect(left, top, right - left, bottom - top)
+    except Exception as exc:
+        logger.debug("Failed to get DF client rect: %s", exc)
+        return None
+
+
+class CursorOverlay(QWidget):
     def __init__(self) -> None:
         super().__init__(
             None,
@@ -181,154 +220,53 @@ class OverlayWindow(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.WindowDoesNotAcceptFocus,
         )
-        self._last_hwnd: int | None = None
-        self._connected = False
-        self._overlay_enabled = True
-
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-        self._panel = QWidget(self)
-        self._panel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self._panel.setStyleSheet(
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(TOOLTIP_MARGIN, TOOLTIP_MARGIN, TOOLTIP_MARGIN, TOOLTIP_MARGIN)
+
+        self._label = QLabel()
+        self._label.setWordWrap(True)
+        self._label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        self._label.setStyleSheet(
             """
-            QWidget {
-                background-color: rgba(18, 18, 18, 180);
-                border: 1px solid rgba(255, 255, 255, 35);
-                border-radius: 10px;
-            }
-            """
-        )
-
-        panel_layout = QVBoxLayout(self._panel)
-        panel_layout.setContentsMargins(12, 12, 12, 12)
-        panel_layout.setSpacing(8)
-
-        self._title = QLabel("DFJP Overlay")
-        self._title.setStyleSheet(
-            "color: #f0f0f0; font-size: 15px; font-weight: 600; background: transparent; border: none;"
-        )
-        self._title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        panel_layout.addWidget(self._title)
-
-        self._status = QLabel("Waiting for Dwarf Fortress...")
-        self._status.setWordWrap(True)
-        self._status.setStyleSheet(
-            "color: #c8c8c8; font-size: 12px; background: transparent; border: none;"
-        )
-        self._status.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        panel_layout.addWidget(self._status)
-
-        self._table = QTableWidget()
-        self._table.setColumnCount(2)
-        self._table.setHorizontalHeaderLabels(["Original", "Japanese"])
-        self._table.verticalHeader().setVisible(False)
-        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._table.setWordWrap(True)
-        self._table.setShowGrid(True)
-        self._table.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-
-        header = self._table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self._table.setColumnWidth(0, 280)
-
-        self._table.setStyleSheet(
-            """
-            QTableWidget {
-                background-color: rgba(0, 0, 0, 80);
-                color: #f0f0f0;
-                gridline-color: rgba(255, 255, 255, 28);
-                border: none;
+            QLabel {
+                color: #f3f3f3;
+                background-color: rgba(16, 16, 16, 200);
+                border: 1px solid rgba(255, 255, 255, 32);
+                border-radius: 9px;
+                padding: 10px 12px;
                 font-family: 'Meiryo UI', 'Yu Gothic UI', sans-serif;
                 font-size: 13px;
             }
-            QTableWidget::item {
-                background-color: rgba(35, 35, 35, 95);
-                border: none;
-                padding: 4px;
-            }
-            QTableWidget::item:alternate {
-                background-color: rgba(44, 44, 44, 95);
-            }
-            QHeaderView::section {
-                background-color: rgba(255, 255, 255, 18);
-                color: #f0f0f0;
-                padding: 4px 8px;
-                border: none;
-                border-bottom: 1px solid rgba(255, 255, 255, 25);
-            }
             """
         )
-        panel_layout.addWidget(self._table, stretch=1)
+        layout.addWidget(self._label)
 
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        margin = 16
-        panel_width = max(420, min(760, int(self.width() * 0.42)))
-        panel_height = max(220, self.height() - margin * 2)
-        x = max(margin, self.width() - panel_width - margin)
-        self._panel.setGeometry(x, margin, panel_width, panel_height)
+        metrics = QFontMetrics(self._label.font())
+        self._content_width = max(420, metrics.averageCharWidth() * 50)
+        self._label.setFixedWidth(self._content_width)
 
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        QTimer.singleShot(0, self._apply_click_through)
+    def show_translation(self, text: str, cursor_pos: QPoint, client_rect: QRect) -> None:
+        self._label.setText(text)
+        self._label.adjustSize()
+        self.adjustSize()
+        self._apply_click_through()
 
-    def set_status(self, text: str) -> None:
-        self._status.setText(text)
+        x = cursor_pos.x() + CURSOR_OFFSET_X
+        y = cursor_pos.y() + CURSOR_OFFSET_Y
 
-    def set_overlay_enabled(self, enabled: bool) -> None:
-        self._overlay_enabled = enabled
+        if x + self.width() > client_rect.right():
+            x = max(client_rect.left(), cursor_pos.x() - self.width() - CURSOR_OFFSET_X)
+        if y + self.height() > client_rect.bottom():
+            y = max(client_rect.top(), client_rect.bottom() - self.height())
 
-    def set_rows(self, originals: list[str], translated: list[str]) -> None:
-        self._table.setRowCount(0)
-        for original, translation in zip(originals, translated):
-            row = self._table.rowCount()
-            self._table.insertRow(row)
-            original_item = QTableWidgetItem(original)
-            translation_item = QTableWidgetItem(translation)
-            original_item.setFlags(original_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            translation_item.setFlags(translation_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self._table.setItem(row, 0, original_item)
-            self._table.setItem(row, 1, translation_item)
-        self._table.resizeRowsToContents()
-
-    def sync_to_window(self, hwnd: int | None, enabled: bool) -> None:
-        self._last_hwnd = hwnd
-        self._overlay_enabled = enabled
-
-        if not enabled or hwnd is None:
-            self.hide()
-            return
-
-        try:
-            if not win32gui.IsWindow(hwnd) or win32gui.IsIconic(hwnd):
-                self.hide()
-                return
-
-            client = win32gui.GetClientRect(hwnd)
-            left, top = win32gui.ClientToScreen(hwnd, (client[0], client[1]))
-            right, bottom = win32gui.ClientToScreen(hwnd, (client[2], client[3]))
-            width = max(0, right - left)
-            height = max(0, bottom - top)
-            if width <= 0 or height <= 0:
-                self.hide()
-                return
-
-            if self.geometry().x() != left or self.geometry().y() != top or self.width() != width or self.height() != height:
-                self.setGeometry(left, top, width, height)
-
-            if not self.isVisible():
-                self.show()
-            self._apply_click_through()
-        except Exception as exc:
-            logger.debug("Failed to sync overlay to DF window: %s", exc)
-            self.hide()
+        self.move(x, y)
+        if not self.isVisible():
+            self.show()
 
     def _apply_click_through(self) -> None:
         try:
@@ -355,7 +293,7 @@ class OverlayWindow(QWidget):
                 | win32con.SWP_SHOWWINDOW,
             )
         except Exception as exc:
-            logger.debug("Failed to apply click-through styles: %s", exc)
+            logger.debug("Failed to set click-through overlay styles: %s", exc)
 
 
 class OverlayController(QObject):
@@ -363,16 +301,17 @@ class OverlayController(QObject):
         super().__init__()
         self._app = app
         self._translator = Translator()
-        self._overlay = OverlayWindow()
         self._reader = PipeReader(on_frame=self.on_frame)
-        self._raw_queue: queue.Queue[list[str]] = queue.Queue(maxsize=4)
-        self._result_queue: queue.Queue[_Frame] = queue.Queue(maxsize=4)
+        self._overlay = CursorOverlay()
+        self._raw_queue: queue.Queue[list[TextBlock]] = queue.Queue(maxsize=4)
+        self._result_queue: queue.Queue[_TranslatedFrame] = queue.Queue(maxsize=4)
         self._overlay_enabled = True
         self._connected = False
         self._ctrl_was_down = False
         self._last_ctrl_toggle = 0.0
         self._last_window_found = False
         self._last_hwnd: int | None = None
+        self._current_frame: _TranslatedFrame = []
 
         self._tray_icon_on = _build_tray_icon(QColor(255, 255, 255))
         self._tray_icon_off = _build_tray_icon(QColor(140, 140, 140))
@@ -381,28 +320,32 @@ class OverlayController(QObject):
         self._start_translation_worker()
         self._start_timers()
         self._reader.start()
-        self._refresh_overlay_state()
+        self._refresh_state()
 
     def shutdown(self) -> None:
         self._reader.stop()
-        self._tray.hide()
         self._overlay.hide()
+        self._tray.hide()
 
     def on_frame(self, entries: list[tuple[str, int, int, int]]) -> None:
-        grouped = _group_by_proximity(entries)
-        if not grouped:
+        blocks = _group_text_blocks(entries)
+        if not blocks:
             return
 
         self._connected = True
         try:
-            self._raw_queue.put_nowait(grouped)
+            self._raw_queue.put_nowait(blocks)
         except queue.Full:
             pass
 
     def toggle_overlay(self, source: str) -> None:
         self._overlay_enabled = not self._overlay_enabled
-        logger.info("Overlay toggled %s by %s", "on" if self._overlay_enabled else "off", source)
-        self._refresh_overlay_state()
+        logger.info(
+            "Overlay toggled %s by %s",
+            "on" if self._overlay_enabled else "off",
+            source,
+        )
+        self._refresh_state()
 
     def _create_tray(self) -> QSystemTrayIcon:
         tray = QSystemTrayIcon(self._tray_icon_on, self._app)
@@ -433,10 +376,11 @@ class OverlayController(QObject):
 
     def _translation_worker(self) -> None:
         while True:
-            originals = self._raw_queue.get()
-            translated = self._translator.translate_batch(originals)
+            blocks = self._raw_queue.get()
+            translated = self._translator.translate_batch([block.text for block in blocks])
+            frame = list(zip(blocks, translated))
             try:
-                self._result_queue.put_nowait((originals, translated))
+                self._result_queue.put_nowait(frame)
             except queue.Full:
                 pass
 
@@ -446,7 +390,7 @@ class OverlayController(QObject):
         self._result_timer.start(RESULT_POLL_INTERVAL_MS)
 
         self._sync_timer = QTimer(self)
-        self._sync_timer.timeout.connect(self._sync_overlay_to_df)
+        self._sync_timer.timeout.connect(self._sync_overlay)
         self._sync_timer.start(WINDOW_SYNC_INTERVAL_MS)
 
         self._ctrl_timer = QTimer(self)
@@ -454,7 +398,7 @@ class OverlayController(QObject):
         self._ctrl_timer.start(CTRL_POLL_INTERVAL_MS)
 
     def _poll_result_queue(self) -> None:
-        latest: _Frame | None = None
+        latest: _TranslatedFrame | None = None
         while True:
             try:
                 latest = self._result_queue.get_nowait()
@@ -462,16 +406,85 @@ class OverlayController(QObject):
                 break
 
         if latest is not None:
-            originals, translated = latest
-            self._overlay.set_rows(originals, translated)
-            self._refresh_overlay_state()
+            self._current_frame = latest
+            self._refresh_state()
 
-    def _sync_overlay_to_df(self) -> None:
+    def _sync_overlay(self) -> None:
         hwnd = _find_df_window()
         self._last_hwnd = hwnd
         self._last_window_found = hwnd is not None
-        self._overlay.sync_to_window(hwnd, self._overlay_enabled)
-        self._refresh_overlay_state()
+
+        if not self._overlay_enabled or hwnd is None:
+            self._overlay.hide()
+            self._refresh_state()
+            return
+
+        client_rect = _client_rect_screen(hwnd)
+        if client_rect is None:
+            self._overlay.hide()
+            self._refresh_state()
+            return
+
+        cursor_pos = QCursor.pos()
+        if not client_rect.contains(cursor_pos):
+            self._overlay.hide()
+            self._refresh_state()
+            return
+
+        hovered_translation = self._translation_for_cursor(cursor_pos, client_rect)
+        if hovered_translation:
+            self._overlay.show_translation(hovered_translation, cursor_pos, client_rect)
+        else:
+            self._overlay.hide()
+
+        self._refresh_state()
+
+    def _translation_for_cursor(self, cursor_pos: QPoint, client_rect: QRect) -> str | None:
+        if not self._current_frame:
+            return None
+
+        max_col = max(
+            span.x_end
+            for block, _translation in self._current_frame
+            for span in block.spans
+        )
+        max_row = max(
+            span.y
+            for block, _translation in self._current_frame
+            for span in block.spans
+        )
+
+        cols = max(MIN_COLUMNS, max_col + 2)
+        rows = max(MIN_ROWS, max_row + 2)
+
+        rel_x = max(0, cursor_pos.x() - client_rect.left())
+        rel_y = max(0, cursor_pos.y() - client_rect.top())
+        tile_x = int(rel_x / max(1, client_rect.width()) * cols)
+        tile_y = int(rel_y / max(1, client_rect.height()) * rows)
+
+        best: tuple[int, int, str] | None = None
+        for block, translation in self._current_frame:
+            for span in block.spans:
+                row_distance = abs(span.y - tile_y)
+                if row_distance > 1:
+                    continue
+
+                x_distance = 0
+                if tile_x < span.x_start:
+                    x_distance = span.x_start - tile_x
+                elif tile_x > span.x_end:
+                    x_distance = tile_x - span.x_end
+
+                if row_distance == 0 and x_distance == 0:
+                    return translation
+
+                score = row_distance * 1000 + x_distance
+                if best is None or score < best[0]:
+                    best = (score, span.y, translation)
+
+        if best and best[0] <= 3:
+            return best[2]
+        return None
 
     def _poll_ctrl_key(self) -> None:
         ctrl_down = _is_ctrl_down()
@@ -485,24 +498,19 @@ class OverlayController(QObject):
             self._last_ctrl_toggle = now
         self._ctrl_was_down = ctrl_down
 
-    def _refresh_overlay_state(self) -> None:
+    def _refresh_state(self) -> None:
         state = "ON" if self._overlay_enabled else "OFF"
-        connection = "connected" if self._connected else "waiting for text"
         window_state = "DF detected" if self._last_window_found else "waiting for Dwarf Fortress"
-        status = f"Overlay {state} · {window_state} · {connection} · {self._translator.engine_name}"
+        connection = "connected" if self._connected else "waiting for text"
 
-        self._overlay.set_overlay_enabled(self._overlay_enabled)
-        self._overlay.set_status(status)
-        self._toggle_action.setText(
-            "Turn overlay off" if self._overlay_enabled else "Turn overlay on"
-        )
+        self._toggle_action.setText("Turn overlay off" if self._overlay_enabled else "Turn overlay on")
         self._tray.setIcon(self._tray_icon_on if self._overlay_enabled else self._tray_icon_off)
-        self._tray.setToolTip(f"DFJP overlay: {state}\n{window_state}\n{connection}")
+        self._tray.setToolTip(
+            f"DFJP overlay: {state}\n{window_state}\n{connection}\n{self._translator.engine_name}"
+        )
 
         if not self._overlay_enabled:
             self._overlay.hide()
-        elif self._last_hwnd is not None:
-            self._overlay.sync_to_window(self._last_hwnd, True)
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (
