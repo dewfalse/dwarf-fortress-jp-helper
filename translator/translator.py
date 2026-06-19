@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from typing import Protocol
 
 from config import Config, load_config
@@ -98,6 +99,7 @@ class Translator:
     """設定に従って翻訳エンジンを選択し、結果をキャッシュする。"""
 
     def __init__(self) -> None:
+        self._cache_lock = threading.RLock()
         self._cache: dict[str, str] = _load_cache()
         self._engine: TranslationEngine | None = self._init_engine(load_config())
         logger.info("翻訳キャッシュ: %d 件を読み込みました", len(self._cache))
@@ -141,22 +143,34 @@ class Translator:
     def engine_name(self) -> str:
         return self._engine.name if self._engine else "利用不可"
 
+    def get_cached_translation(self, text: str) -> str | None:
+        if not text.strip():
+            return text
+        with self._cache_lock:
+            return self._cache.get(text)
+
     def translate(self, text: str) -> str:
         if not text.strip():
             return text
-        if text in self._cache:
-            return self._cache[text]
+        with self._cache_lock:
+            cached = self._cache.get(text)
+        if cached is not None:
+            return cached
         return self.translate_batch([text])[0]
 
     def translate_batch(self, texts: list[str]) -> list[str]:
         if self._engine is None:
             return texts
 
-        uncached = [text for text in texts if text.strip() and text not in self._cache]
+        with self._cache_lock:
+            uncached = [text for text in texts if text.strip() and text not in self._cache]
         if uncached:
             translated = self._engine.translate_batch(uncached)
-            for source, dest in zip(uncached, translated):
-                self._cache[source] = dest
-            _save_cache(self._cache)
+            with self._cache_lock:
+                for source, dest in zip(uncached, translated):
+                    self._cache[source] = dest
+                cache_snapshot = dict(self._cache)
+            _save_cache(cache_snapshot)
 
-        return [self._cache.get(text, text) for text in texts]
+        with self._cache_lock:
+            return [self._cache.get(text, text) for text in texts]

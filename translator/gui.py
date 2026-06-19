@@ -32,6 +32,8 @@ CTRL_POLL_INTERVAL_MS = 50
 CTRL_TOGGLE_COOLDOWN_SECONDS = 0.40
 CURSOR_OFFSET_X = 22
 CURSOR_OFFSET_Y = 10
+LOADING_FRAME_INTERVAL_SECONDS = 0.12
+LOADING_INDENT_SEQUENCE = (0, 1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1)
 MIN_COLUMNS = 80
 MIN_ROWS = 25
 TOOLTIP_MARGIN = 12
@@ -624,12 +626,16 @@ class OverlayController(QObject):
         self._last_window_found = False
         self._last_hwnd: int | None = None
         self._current_frame: _TranslatedFrame = []
+        self._source_frame: _TranslatedFrame = []
         self._mouse_tile: tuple[int, int] | None = None
         self._mouse_pixel: tuple[int, int] | None = None
         self._tile_size: tuple[int, int] | None = None
         self._screen_scale: tuple[float, float] | None = None
+        self._loading_text_key: str | None = None
+        self._loading_started_at = 0.0
         self._last_sync_state: str | None = None
         self._last_frame_signature: tuple[int, str] | None = None
+        self._last_enqueued_signature: tuple[str, ...] | None = None
 
         self._tray_icon_on = _build_tray_icon(QColor(255, 255, 255))
         self._tray_icon_off = _build_tray_icon(QColor(140, 140, 140))
@@ -648,10 +654,12 @@ class OverlayController(QObject):
     def on_frame(self, entries: list[TextEntry]) -> None:
         blocks = _group_text_blocks(entries)
         if not blocks:
+            self._source_frame = []
             self._log_sync_state("frame-empty")
             return
 
         self._connected = True
+        self._source_frame = [(block, block.text) for block in blocks]
         tile_info = next(
             (
                 entry
@@ -694,10 +702,13 @@ class OverlayController(QObject):
         if signature != self._last_frame_signature:
             self._last_frame_signature = signature
             logger.debug("Grouped %d text blocks; first=%r", len(blocks), blocks[0].text[:80])
-        try:
-            self._raw_queue.put_nowait(blocks)
-        except queue.Full:
-            pass
+        enqueue_signature = tuple(block.text for block in blocks)
+        if enqueue_signature != self._last_enqueued_signature:
+            try:
+                self._raw_queue.put_nowait(blocks)
+                self._last_enqueued_signature = enqueue_signature
+            except queue.Full:
+                pass
 
     def toggle_overlay(self, source: str) -> None:
         self._overlay_enabled = not self._overlay_enabled
@@ -813,50 +824,69 @@ class OverlayController(QObject):
 
         self._update_cursor_calibration(cursor_pos, client_rect)
 
-        if not self._current_frame:
+        if not self._source_frame:
             self._log_sync_state("cursor-inside-no-frame")
             self._overlay.hide()
             self._refresh_state()
             return
 
-        hovered_translation = self._translation_for_cursor(cursor_pos, client_rect)
-        if hovered_translation:
-            self._log_sync_state(f"show:{hovered_translation[:80]}")
-            self._overlay.show_translation(hovered_translation, cursor_pos, client_rect)
+        hovered_text = self._source_text_for_cursor(cursor_pos, client_rect)
+        if hovered_text:
+            overlay_text, is_loading = self._overlay_text_for_source_text(hovered_text)
+            if is_loading:
+                if hovered_text != self._loading_text_key:
+                    self._loading_text_key = hovered_text
+                    self._loading_started_at = time.monotonic()
+                self._log_sync_state("show-loading")
+            else:
+                self._loading_text_key = None
+                self._log_sync_state(f"show:{overlay_text[:80]}")
+            self._overlay.show_translation(overlay_text, cursor_pos, client_rect)
         else:
+            self._loading_text_key = None
             self._log_sync_state("cursor-inside-no-translation")
             self._overlay.hide()
 
         self._refresh_state()
 
-    def _translation_for_cursor(self, cursor_pos: QPoint, client_rect: QRect) -> str | None:
-        if not self._current_frame:
+    def _source_text_for_cursor(self, cursor_pos: QPoint, client_rect: QRect) -> str | None:
+        if not self._source_frame:
             return None
 
         primary_frame = [
-            (block, translation)
-            for block, translation in self._current_frame
+            (block, text)
+            for block, text in self._source_frame
             if not block.fallback_only
         ]
         fallback_frame = [
-            (block, translation)
-            for block, translation in self._current_frame
+            (block, text)
+            for block, text in self._source_frame
             if block.fallback_only
         ]
 
-        primary_translation = self._find_precise_translation(
+        primary_text = self._find_precise_translation(
             primary_frame,
             cursor_pos,
             client_rect,
         )
-        if primary_translation is not None:
-            return primary_translation
+        if primary_text is not None:
+            return primary_text
 
         return self._find_fallback_translation(
             fallback_frame,
             cursor_pos,
             client_rect,
         )
+
+    def _overlay_text_for_source_text(self, source_text: str) -> tuple[str, bool]:
+        if not self._translator.is_active:
+            return source_text, False
+
+        cached_translation = self._translator.get_cached_translation(source_text)
+        if cached_translation is not None:
+            return cached_translation, False
+
+        return self._loading_indicator_text(), True
 
     def _find_precise_translation(
         self,
@@ -964,7 +994,7 @@ class OverlayController(QObject):
         if not frame:
             return None
 
-        full_frame = self._current_frame if self._current_frame else frame
+        full_frame = self._source_frame if self._source_frame else frame
         cols, rows = _frame_grid_size(full_frame)
         for block, translation in frame:
             hover_rect = _normalized_hover_rect_for_block(
@@ -978,6 +1008,11 @@ class OverlayController(QObject):
             if hover_rect.contains(cursor_pos):
                 return translation
         return None
+
+    def _loading_indicator_text(self) -> str:
+        elapsed = max(0.0, time.monotonic() - self._loading_started_at)
+        phase = int(elapsed / LOADING_FRAME_INTERVAL_SECONDS) % len(LOADING_INDENT_SEQUENCE)
+        return " " * LOADING_INDENT_SEQUENCE[phase] + "..."
 
     def _poll_ctrl_key(self) -> None:
         ctrl_down = _is_ctrl_down()
