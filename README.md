@@ -60,6 +60,12 @@ Windows 用の Dwarf Fortress 日本語プレイ補助ツールです。
   - 例: `ja`, `en`, `ko`, `zh-CN`
 - `deepl.api_key`
   - DeepL を使う場合の API キー
+- `overlay.tooltip_opacity`
+  - 翻訳ツールチップの透過率
+  - `1.0` に近いほど濃く、低いほど元テキストが見えやすい
+- `overlay.all_text_vertical_shift_ratio`
+  - all text モードで重なったツールチップを縦にどれくらいずらすか
+  - `0.5` = 半分ずらす / `1.0` = 完全にずらす
 - `debug.log`
   - `true` のとき、受信テキストや動作ログを `debug.log` に出力
 
@@ -74,6 +80,10 @@ target_language = "ja"
 
 [deepl]
 api_key = ""
+
+[overlay]
+tooltip_opacity = 0.78
+all_text_vertical_shift_ratio = 1.0
 
 [debug]
 log = true
@@ -96,6 +106,14 @@ target_language = "ja"
 
 [deepl]
 api_key = "YOUR_DEEPL_API_KEY"
+```
+
+all text モードで元テキストを見やすくする例:
+
+```toml
+[overlay]
+tooltip_opacity = 0.55
+all_text_vertical_shift_ratio = 1.0
 ```
 
 言語や翻訳エンジンを切り替えたあとに古い翻訳が残る場合は、翻訳キャッシュを削除してください。

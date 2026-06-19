@@ -28,6 +28,14 @@ DFJP 起動手順
 - deepl.api_key
     DeepL を使う場合の API キー
 
+- overlay.tooltip_opacity
+    翻訳ツールチップの透過率
+    1.0 に近いほど濃く、低いほど元テキストが見えやすい
+
+- overlay.all_text_vertical_shift_ratio
+    all text モードで重なったツールチップを縦にどれくらいずらすか
+    0.5 = 半分ずらす / 1.0 = 完全にずらす
+
 - debug.log
     true にすると debug.log に動作ログを出力
 
@@ -41,6 +49,10 @@ Google 翻訳で日本語表示
 
   [deepl]
   api_key = ""
+
+  [overlay]
+  tooltip_opacity = 0.78
+  all_text_vertical_shift_ratio = 1.0
 
   [debug]
   log = true
@@ -59,6 +71,12 @@ DeepL で日本語表示
 
   [deepl]
   api_key = "YOUR_DEEPL_API_KEY"
+
+all text モードで元テキストを見やすくする例
+
+  [overlay]
+  tooltip_opacity = 0.55
+  all_text_vertical_shift_ratio = 1.0
 
 生成されるファイル
 ------------------

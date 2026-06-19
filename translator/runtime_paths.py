@@ -21,6 +21,14 @@ target_language = "ja"
 # 環境変数 DEEPL_API_KEY でも設定可能（設定されていればそちらを優先）
 api_key = ""
 
+[overlay]
+# 翻訳ツールチップの透過率（0.05 ～ 1.0）
+# 1.0 に近いほど濃く、低いほど元テキストが見えやすい
+tooltip_opacity = 0.78
+# all text モードで重なったツールチップを縦にどれくらいずらすか
+# 0.5 = 半分ずらす / 1.0 = 完全にずらす
+all_text_vertical_shift_ratio = 1.0
+
 [debug]
 # true にすると受信したテキストを debug.log に記録する
 log = true

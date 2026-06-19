@@ -12,6 +12,8 @@ class Config:
     engine: str = "google"
     target_language: str = "ja"
     deepl_api_key: str = field(default="")
+    tooltip_opacity: float = 0.78
+    all_text_vertical_shift_ratio: float = 1.0
     debug_log: bool = False
 
 
@@ -29,6 +31,23 @@ def load_config() -> Config:
 
         d = data.get("deepl", {})
         cfg.deepl_api_key = d.get("api_key", "")
+
+        overlay = data.get("overlay", {})
+        try:
+            cfg.tooltip_opacity = float(overlay.get("tooltip_opacity", cfg.tooltip_opacity))
+        except (TypeError, ValueError):
+            pass
+        cfg.tooltip_opacity = max(0.05, min(1.0, cfg.tooltip_opacity))
+        try:
+            cfg.all_text_vertical_shift_ratio = float(
+                overlay.get(
+                    "all_text_vertical_shift_ratio",
+                    cfg.all_text_vertical_shift_ratio,
+                )
+            )
+        except (TypeError, ValueError):
+            pass
+        cfg.all_text_vertical_shift_ratio = max(0.1, min(2.0, cfg.all_text_vertical_shift_ratio))
 
         dbg = data.get("debug", {})
         cfg.debug_log = dbg.get("log", False)

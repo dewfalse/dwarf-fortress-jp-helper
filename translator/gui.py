@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 import logging
 import queue
 import threading
@@ -15,6 +16,7 @@ from PyQt6.QtCore import QObject, QPoint, QRect, QTimer, Qt
 from PyQt6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QSystemTrayIcon, QVBoxLayout, QWidget
 
+from config import load_config
 from pipe_reader import (
     PipeReader,
     TEXT_KIND_RICH_BLOCK,
@@ -38,6 +40,28 @@ MIN_COLUMNS = 80
 MIN_ROWS = 25
 TOOLTIP_MARGIN = 12
 MIN_TOOLTIP_WIDTH = 180
+ALL_TEXT_GAP = 8
+ALL_TEXT_CLUSTER_MARGIN = 6
+ALL_TEXT_COLUMN_MERGE_GAP = 28
+ALL_TEXT_MAX_CLUSTER_ITEMS = 3
+DEFAULT_ALL_TEXT_VERTICAL_SHIFT_RATIO = 1.0
+ALL_TEXT_MAX_SOURCE_VERTICAL_GAP = 48
+ALL_TEXT_MAX_MERGE_SOURCE_TEXT_LENGTH = 80
+DEFAULT_TOOLTIP_OPACITY = 0.78
+
+
+class OverlayMode(Enum):
+    HOVER = "hover"
+    ALL_TEXT = "all-text"
+    OFF = "off"
+
+    @property
+    def display_name(self) -> str:
+        if self is OverlayMode.HOVER:
+            return "Hover"
+        if self is OverlayMode.ALL_TEXT:
+            return "All text"
+        return "Off"
 
 
 @dataclass(frozen=True)
@@ -320,6 +344,63 @@ def _group_text_blocks(entries: list[TextEntry]) -> list[TextBlock]:
     return primary_blocks + fallback_blocks
 
 
+def _blocks_overlap(left: TextBlock, right: TextBlock) -> bool:
+    for left_span in left.spans:
+        for right_span in right.spans:
+            if left_span.y != right_span.y:
+                continue
+            if left_span.x_start <= right_span.x_end and right_span.x_start <= left_span.x_end:
+                return True
+    return False
+
+
+def _clamp_overlay_rect(x: int, y: int, width: int, height: int, client_rect: QRect) -> QRect:
+    max_x = max(client_rect.left(), client_rect.right() - width)
+    max_y = max(client_rect.top(), client_rect.bottom() - height)
+    clamped_x = max(client_rect.left(), min(x, max_x))
+    clamped_y = max(client_rect.top(), min(y, max_y))
+    return QRect(clamped_x, clamped_y, max(1, width), max(1, height))
+
+
+def _rect_union(rects: list[QRect]) -> QRect | None:
+    if not rects:
+        return None
+    merged = QRect(rects[0])
+    for rect in rects[1:]:
+        merged = merged.united(rect)
+    return merged
+
+
+def _vertical_rects_touch_or_overlap(top_rect: QRect, bottom_rect: QRect, margin: int = 0) -> bool:
+    top = min(top_rect.top(), bottom_rect.top())
+    bottom = max(top_rect.bottom(), bottom_rect.bottom())
+    combined_height = top_rect.height() + bottom_rect.height() + margin * 2
+    return (bottom - top) <= combined_height
+
+
+def _rects_share_column(left: QRect, right: QRect, gap: int = ALL_TEXT_COLUMN_MERGE_GAP) -> bool:
+    left_start = left.left() - gap
+    left_end = left.right() + gap
+    right_start = right.left() - gap
+    right_end = right.right() + gap
+    return left_start <= right_end and right_start <= left_end
+
+
+def _source_rects_stack_vertically(top_rect: QRect, bottom_rect: QRect) -> bool:
+    top_center = top_rect.center().y()
+    bottom_center = bottom_rect.center().y()
+    min_required = max(6, min(top_rect.height(), bottom_rect.height()) // 2)
+    return abs(top_center - bottom_center) >= min_required
+
+
+def _clamp_tooltip_opacity(value: float) -> float:
+    return max(0.05, min(1.0, value))
+
+
+def _clamp_all_text_vertical_shift_ratio(value: float) -> float:
+    return max(0.1, min(2.0, value))
+
+
 def _find_df_window() -> int | None:
     matches: list[int] = []
 
@@ -485,7 +566,7 @@ def _normalized_hover_rect_for_block(
 
 
 class CursorOverlay(QWidget):
-    def __init__(self) -> None:
+    def __init__(self, tooltip_opacity: float = DEFAULT_TOOLTIP_OPACITY) -> None:
         super().__init__(
             None,
             Qt.WindowType.Tool
@@ -504,26 +585,66 @@ class CursorOverlay(QWidget):
         self._label = QLabel()
         self._label.setWordWrap(True)
         self._label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        self._label.setStyleSheet(
-            """
-            QLabel {
-                color: #f3f3f3;
-                background-color: rgba(16, 16, 16, 200);
-                border: 1px solid rgba(255, 255, 255, 32);
-                border-radius: 9px;
-                padding: 10px 12px;
-                font-family: 'Meiryo UI', 'Yu Gothic UI', sans-serif;
-                font-size: 13px;
-            }
-            """
-        )
         layout.addWidget(self._label)
 
         metrics = QFontMetrics(self._label.font())
         self._content_width = max(420, metrics.averageCharWidth() * 50)
         self._label.setMaximumWidth(self._content_width)
+        self._tooltip_opacity = _clamp_tooltip_opacity(tooltip_opacity)
+        self._apply_stylesheet()
+        self._last_position: tuple[int, int] | None = None
+        self._click_through_ready = False
+        self._prepared_text: str | None = None
+        self._prepared_width: int | None = None
+
+    def set_tooltip_opacity(self, tooltip_opacity: float) -> None:
+        clamped = _clamp_tooltip_opacity(tooltip_opacity)
+        if abs(clamped - self._tooltip_opacity) < 0.001:
+            return
+        self._tooltip_opacity = clamped
+        self._apply_stylesheet()
+
+    def _apply_stylesheet(self) -> None:
+        background_alpha = max(12, min(255, int(round(255 * self._tooltip_opacity))))
+        border_alpha = max(12, min(80, int(round(48 * self._tooltip_opacity))))
+        self._label.setStyleSheet(
+            f"""
+            QLabel {{
+                color: #f3f3f3;
+                background-color: rgba(16, 16, 16, {background_alpha});
+                border: 1px solid rgba(255, 255, 255, {border_alpha});
+                border-radius: 9px;
+                padding: 10px 12px;
+                font-family: 'Meiryo UI', 'Yu Gothic UI', sans-serif;
+                font-size: 13px;
+            }}
+            """
+        )
 
     def show_translation(self, text: str, cursor_pos: QPoint, client_rect: QRect) -> None:
+        self._prepare_text(text)
+
+        preferred_x = cursor_pos.x() + CURSOR_OFFSET_X
+        preferred_y = cursor_pos.y() + CURSOR_OFFSET_Y
+        self._show_at(preferred_x, preferred_y, client_rect)
+
+    def show_translation_near_rect(self, text: str, target_rect: QRect, client_rect: QRect) -> None:
+        self._prepare_text(text)
+
+        native_width, _native_height = self._native_size()
+        preferred_x = target_rect.right() + 8
+        preferred_y = max(client_rect.top(), target_rect.top() - 4)
+        fallback_x = target_rect.left() - native_width - 8
+        self._show_at(preferred_x, preferred_y, client_rect, fallback_x=fallback_x)
+
+    def prepare_translation(self, text: str) -> tuple[int, int]:
+        self._prepare_text(text)
+        return max(1, self.width()), max(1, self.height())
+
+    def show_prepared_at(self, x: int, y: int, client_rect: QRect) -> None:
+        self._show_at(x, y, client_rect)
+
+    def _prepare_text(self, text: str) -> None:
         metrics = QFontMetrics(self._label.font())
         longest_line_width = max(
             (metrics.horizontalAdvance(line) for line in text.splitlines()),
@@ -533,29 +654,46 @@ class CursorOverlay(QWidget):
             self._content_width,
             max(MIN_TOOLTIP_WIDTH, longest_line_width + 28),
         )
+        if text == self._prepared_text and target_width == self._prepared_width:
+            return
+        self._prepared_text = text
+        self._prepared_width = target_width
         self._label.setFixedWidth(target_width)
         self._label.setText(text)
         self._label.adjustSize()
         self.adjustSize()
 
+    def _show_at(
+        self,
+        preferred_x: int,
+        preferred_y: int,
+        client_rect: QRect,
+        fallback_x: int | None = None,
+    ) -> None:
         if not self.isVisible():
             self.show()
-        self.raise_()
-        self._apply_click_through()
+            self.raise_()
+        if not self._click_through_ready:
+            self._apply_click_through()
+            self._click_through_ready = True
 
         native_width, native_height = self._native_size()
-
-        preferred_x = cursor_pos.x() + CURSOR_OFFSET_X
-        preferred_y = cursor_pos.y() + CURSOR_OFFSET_Y
         max_x = client_rect.right() - native_width
         max_y = client_rect.bottom() - native_height
 
-        x = min(preferred_x, max_x)
+        x = preferred_x
+        if x > max_x:
+            if fallback_x is not None and fallback_x >= client_rect.left():
+                x = fallback_x
+            else:
+                x = max_x
         y = min(preferred_y, max_y)
         x = max(client_rect.left(), x)
         y = max(client_rect.top(), y)
 
-        self._move_native(x, y)
+        if self._last_position != (x, y):
+            self._move_native(x, y)
+            self._last_position = (x, y)
 
     def _apply_click_through(self) -> None:
         try:
@@ -614,12 +752,19 @@ class OverlayController(QObject):
     def __init__(self, app: QApplication) -> None:
         super().__init__()
         self._app = app
+        self._config = load_config()
+        self._tooltip_opacity = _clamp_tooltip_opacity(self._config.tooltip_opacity)
+        self._all_text_vertical_shift_ratio = _clamp_all_text_vertical_shift_ratio(
+            getattr(self._config, "all_text_vertical_shift_ratio", DEFAULT_ALL_TEXT_VERTICAL_SHIFT_RATIO)
+        )
         self._translator = Translator()
         self._reader = PipeReader(on_frame=self.on_frame)
-        self._overlay = CursorOverlay()
+        self._overlay = CursorOverlay(self._tooltip_opacity)
+        self._all_text_overlays: list[CursorOverlay] = []
         self._raw_queue: queue.Queue[list[TextBlock]] = queue.Queue(maxsize=4)
         self._result_queue: queue.Queue[_TranslatedFrame] = queue.Queue(maxsize=4)
-        self._overlay_enabled = True
+        self._overlay_mode = OverlayMode.HOVER
+        self._last_active_mode = OverlayMode.HOVER
         self._connected = False
         self._ctrl_was_down = False
         self._last_ctrl_toggle = 0.0
@@ -636,6 +781,7 @@ class OverlayController(QObject):
         self._last_sync_state: str | None = None
         self._last_frame_signature: tuple[int, str] | None = None
         self._last_enqueued_signature: tuple[str, ...] | None = None
+        self._last_all_text_render_signature: tuple[object, ...] | None = None
 
         self._tray_icon_on = _build_tray_icon(QColor(255, 255, 255))
         self._tray_icon_off = _build_tray_icon(QColor(140, 140, 140))
@@ -648,7 +794,7 @@ class OverlayController(QObject):
 
     def shutdown(self) -> None:
         self._reader.stop()
-        self._overlay.hide()
+        self._hide_all_overlays()
         self._tray.hide()
 
     def on_frame(self, entries: list[TextEntry]) -> None:
@@ -711,17 +857,39 @@ class OverlayController(QObject):
                 pass
 
     def toggle_overlay(self, source: str) -> None:
-        self._overlay_enabled = not self._overlay_enabled
+        if self._overlay_mode is OverlayMode.OFF:
+            self._set_overlay_mode(self._last_active_mode, source)
+        else:
+            self._set_overlay_mode(OverlayMode.OFF, source)
+
+    def cycle_overlay_mode(self, source: str) -> None:
+        next_mode = {
+            OverlayMode.HOVER: OverlayMode.ALL_TEXT,
+            OverlayMode.ALL_TEXT: OverlayMode.OFF,
+            OverlayMode.OFF: OverlayMode.HOVER,
+        }[self._overlay_mode]
+        self._set_overlay_mode(next_mode, source)
+
+    def _set_overlay_mode(self, mode: OverlayMode, source: str) -> None:
+        previous = self._overlay_mode
+        self._overlay_mode = mode
+        if mode is not OverlayMode.OFF:
+            self._last_active_mode = mode
         logger.info(
-            "Overlay toggled %s by %s",
-            "on" if self._overlay_enabled else "off",
+            "Overlay mode changed %s -> %s by %s",
+            previous.value,
+            mode.value,
             source,
         )
+        if mode is not OverlayMode.ALL_TEXT:
+            self._last_all_text_render_signature = None
+        if mode is OverlayMode.OFF:
+            self._hide_all_overlays()
         self._refresh_state()
 
     def _create_tray(self) -> QSystemTrayIcon:
         tray = QSystemTrayIcon(self._tray_icon_on, self._app)
-        tray.setToolTip("DFJP overlay: ON")
+        tray.setToolTip("DFJP overlay: Hover")
         tray.activated.connect(self._on_tray_activated)
 
         menu = QMenu()
@@ -800,16 +968,16 @@ class OverlayController(QObject):
         self._last_hwnd = hwnd
         self._last_window_found = hwnd is not None
 
-        if not self._overlay_enabled or hwnd is None:
-            self._log_sync_state("overlay-disabled" if not self._overlay_enabled else "df-window-missing")
-            self._overlay.hide()
+        if self._overlay_mode is OverlayMode.OFF or hwnd is None:
+            self._log_sync_state("overlay-disabled" if self._overlay_mode is OverlayMode.OFF else "df-window-missing")
+            self._hide_all_overlays()
             self._refresh_state()
             return
 
         client_rect = _client_rect_screen(hwnd)
         if client_rect is None:
             self._log_sync_state("client-rect-missing")
-            self._overlay.hide()
+            self._hide_all_overlays()
             self._refresh_state()
             return
 
@@ -818,7 +986,7 @@ class OverlayController(QObject):
             self._log_sync_state(
                 f"cursor-outside:{cursor_pos.x()},{cursor_pos.y()} rect={client_rect.left()},{client_rect.top()}..{client_rect.right()},{client_rect.bottom()}"
             )
-            self._overlay.hide()
+            self._hide_all_overlays()
             self._refresh_state()
             return
 
@@ -826,9 +994,20 @@ class OverlayController(QObject):
 
         if not self._source_frame:
             self._log_sync_state("cursor-inside-no-frame")
-            self._overlay.hide()
+            self._hide_all_overlays()
             self._refresh_state()
             return
+
+        if self._overlay_mode is OverlayMode.ALL_TEXT:
+            self._sync_all_text_overlays(client_rect)
+        else:
+            self._sync_hover_overlay(cursor_pos, client_rect)
+
+        self._refresh_state()
+
+    def _sync_hover_overlay(self, cursor_pos: QPoint, client_rect: QRect) -> None:
+        self._hide_all_text_overlays()
+        self._last_all_text_render_signature = None
 
         hovered_text = self._source_text_for_cursor(cursor_pos, client_rect)
         if hovered_text:
@@ -837,6 +1016,7 @@ class OverlayController(QObject):
                 if hovered_text != self._loading_text_key:
                     self._loading_text_key = hovered_text
                     self._loading_started_at = time.monotonic()
+                    overlay_text = self._loading_indicator_text()
                 self._log_sync_state("show-loading")
             else:
                 self._loading_text_key = None
@@ -847,7 +1027,350 @@ class OverlayController(QObject):
             self._log_sync_state("cursor-inside-no-translation")
             self._overlay.hide()
 
-        self._refresh_state()
+    def _sync_all_text_overlays(self, client_rect: QRect) -> None:
+        display_frame = self._display_source_frame()
+
+        if not display_frame:
+            self._hide_all_overlays()
+            self._last_all_text_render_signature = None
+            self._log_sync_state("all-text-no-frame")
+            return
+
+        rendered_blocks: list[tuple[TextBlock, str, bool]] = []
+        has_loading = False
+        for block, _source_text in display_frame:
+            if not self._translator.is_active:
+                overlay_text = block.text
+                is_loading = False
+            else:
+                cached_translation = self._translator.get_cached_translation(block.text)
+                if cached_translation is None:
+                    overlay_text = "..."
+                    is_loading = True
+                else:
+                    overlay_text = cached_translation
+                    is_loading = False
+            rendered_blocks.append((block, overlay_text, is_loading))
+            has_loading = has_loading or is_loading
+
+        if has_loading:
+            if self._loading_text_key != "__all__":
+                self._loading_text_key = "__all__"
+                self._loading_started_at = time.monotonic()
+        else:
+            self._loading_text_key = None
+
+        self._overlay.hide()
+        self._ensure_all_text_overlays(len(rendered_blocks))
+
+        cluster_items: list[dict[str, object]] = []
+        for block, overlay_text, is_loading in sorted(
+            rendered_blocks,
+            key=lambda item: (
+                min(span.y for span in item[0].spans) if item[0].spans else 0,
+                min(span.x_start for span in item[0].spans) if item[0].spans else 0,
+                item[0].text,
+            ),
+        ):
+            target_rect = self._block_display_rect(block, client_rect)
+            source_rect = self._block_source_rect(block, client_rect)
+            if target_rect is None:
+                continue
+            if source_rect is None:
+                source_rect = QRect(target_rect)
+            cluster_items.append(
+                {
+                    "target_rect": target_rect,
+                    "texts": [overlay_text],
+                    "sort_key": (
+                        min(span.y for span in block.spans) if block.spans else 0,
+                        min(span.x_start for span in block.spans) if block.spans else 0,
+                        block.text,
+                    ),
+                    "source_rect": source_rect,
+                    "loading": is_loading,
+                    "item_count": 1,
+                    "max_source_text_length": len(block.text),
+                }
+            )
+
+        render_signature = self._build_all_text_render_signature(cluster_items, client_rect)
+        if render_signature == self._last_all_text_render_signature:
+            return
+        self._last_all_text_render_signature = render_signature
+
+        final_clusters = self._merge_all_text_clusters(cluster_items, client_rect)
+        shown = 0
+        placed_cluster_rects: list[QRect] = []
+        for cluster in final_clusters:
+            overlay = self._all_text_overlays[shown]
+            cluster_text = str(cluster["text"])
+            overlay.prepare_translation(cluster_text)
+            preferred_rect = self._overlay_rect_for_source_rect(
+                cluster["source_rect"],
+                overlay.width(),
+                overlay.height(),
+                client_rect,
+            )
+            cluster_rect = self._stagger_all_text_cluster_rect(
+                preferred_rect,
+                placed_cluster_rects,
+                client_rect,
+            )
+            overlay.show_prepared_at(cluster_rect.x(), cluster_rect.y(), client_rect)
+            placed_cluster_rects.append(cluster_rect)
+            shown += 1
+
+        for overlay in self._all_text_overlays[shown:]:
+            overlay.hide()
+
+        if has_loading:
+            self._log_sync_state(f"show-all-loading:{shown}")
+        else:
+            self._log_sync_state(f"show-all:{shown}")
+
+    def _merge_all_text_clusters(
+        self,
+        cluster_items: list[dict[str, object]],
+        client_rect: QRect,
+    ) -> list[dict[str, object]]:
+        if not cluster_items:
+            return []
+
+        items = list(cluster_items)
+        while True:
+            measured_items: list[dict[str, object]] = []
+            ordered_items = sorted(
+                items,
+                key=lambda item: (
+                    item["source_rect"].left(),
+                    item["source_rect"].top(),
+                    item["sort_key"],
+                ),
+            )
+            for index, item in enumerate(ordered_items):
+                overlay = self._all_text_overlays[index]
+                text = self._combine_cluster_texts(item["texts"])
+                overlay.prepare_translation(text)
+                target_rect = QRect(item["target_rect"])
+                source_rect = QRect(item.get("source_rect", target_rect))
+                preferred_rect = self._overlay_rect_for_source_rect(
+                    source_rect,
+                    overlay.width(),
+                    overlay.height(),
+                    client_rect,
+                )
+                measured_items.append(
+                    {
+                        "target_rect": target_rect,
+                        "source_rect": source_rect,
+                        "texts": list(item["texts"]),
+                        "sort_key": item["sort_key"],
+                        "text": text,
+                        "preferred_rect": preferred_rect,
+                        "item_count": int(item.get("item_count", 1)),
+                        "max_source_text_length": int(item.get("max_source_text_length", len(text))),
+                    }
+                )
+
+            merged_items, did_merge = self._merge_adjacent_all_text_clusters(measured_items)
+            if not did_merge:
+                return sorted(measured_items, key=lambda item: item["sort_key"])
+            items = merged_items
+
+    def _build_all_text_render_signature(
+        self,
+        cluster_items: list[dict[str, object]],
+        client_rect: QRect,
+    ) -> tuple[object, ...]:
+        items_signature = tuple(
+            (
+                tuple(item["texts"]),
+                item["loading"],
+                item["sort_key"],
+                (
+                    item["source_rect"].left(),
+                    item["source_rect"].top(),
+                    item["source_rect"].width(),
+                    item["source_rect"].height(),
+                ),
+            )
+            for item in cluster_items
+        )
+        return (
+            client_rect.left(),
+            client_rect.top(),
+            client_rect.width(),
+            client_rect.height(),
+            items_signature,
+        )
+
+    def _merge_adjacent_all_text_clusters(
+        self,
+        measured_items: list[dict[str, object]],
+    ) -> tuple[list[dict[str, object]], bool]:
+        if not measured_items:
+            return [], False
+
+        merged_items: list[dict[str, object]] = []
+        current = self._strip_cluster_measurement(measured_items[0])
+        did_merge = False
+
+        for next_item in measured_items[1:]:
+            if self._can_merge_all_text_clusters(current, next_item):
+                current = self._merge_cluster_pair(current, next_item)
+                did_merge = True
+            else:
+                merged_items.append(current)
+                current = self._strip_cluster_measurement(next_item)
+
+        merged_items.append(current)
+        return merged_items, did_merge
+
+    def _strip_cluster_measurement(self, item: dict[str, object]) -> dict[str, object]:
+        return {
+            "target_rect": QRect(item["target_rect"]),
+            "source_rect": QRect(item["source_rect"]),
+            "texts": list(item["texts"]),
+            "sort_key": item["sort_key"],
+            "item_count": int(item.get("item_count", len(item["texts"]))),
+            "max_source_text_length": int(item.get("max_source_text_length", 0)),
+        }
+
+    def _can_merge_all_text_clusters(
+        self,
+        current: dict[str, object],
+        next_item: dict[str, object],
+    ) -> bool:
+        current_count = int(current.get("item_count", 1))
+        next_count = int(next_item.get("item_count", 1))
+        if current_count + next_count > ALL_TEXT_MAX_CLUSTER_ITEMS:
+            return False
+
+        current_max_len = int(current.get("max_source_text_length", 0))
+        next_max_len = int(next_item.get("max_source_text_length", 0))
+        if (
+            current_max_len > ALL_TEXT_MAX_MERGE_SOURCE_TEXT_LENGTH
+            or next_max_len > ALL_TEXT_MAX_MERGE_SOURCE_TEXT_LENGTH
+        ):
+            return False
+
+        current_rect = current["preferred_rect"] if "preferred_rect" in current else current["target_rect"]
+        next_rect = next_item["preferred_rect"] if "preferred_rect" in next_item else next_item["target_rect"]
+        current_source_rect = current["source_rect"]
+        next_source_rect = next_item["source_rect"]
+
+        vertical_gap = 0
+        if current_source_rect.bottom() < next_source_rect.top():
+            vertical_gap = next_source_rect.top() - current_source_rect.bottom()
+        elif next_source_rect.bottom() < current_source_rect.top():
+            vertical_gap = current_source_rect.top() - next_source_rect.bottom()
+
+        return (
+            _vertical_rects_touch_or_overlap(current_rect, next_rect, ALL_TEXT_CLUSTER_MARGIN)
+            and _rects_share_column(current_source_rect, next_source_rect)
+            and _source_rects_stack_vertically(current_source_rect, next_source_rect)
+            and vertical_gap <= ALL_TEXT_MAX_SOURCE_VERTICAL_GAP
+        )
+
+    def _merge_cluster_pair(
+        self,
+        current: dict[str, object],
+        next_item: dict[str, object],
+    ) -> dict[str, object]:
+        target_rect = _rect_union([QRect(current["target_rect"]), QRect(next_item["target_rect"])])
+        source_rect = _rect_union([QRect(current["source_rect"]), QRect(next_item["source_rect"])])
+        merged_texts: list[str] = []
+        for text in list(current["texts"]) + list(next_item["texts"]):
+            if text not in merged_texts:
+                merged_texts.append(text)
+
+        return {
+            "target_rect": target_rect if target_rect is not None else QRect(current["target_rect"]),
+            "source_rect": source_rect if source_rect is not None else QRect(current["source_rect"]),
+            "texts": merged_texts,
+            "sort_key": min(current["sort_key"], next_item["sort_key"]),
+            "item_count": int(current.get("item_count", 1)) + int(next_item.get("item_count", 1)),
+            "max_source_text_length": max(
+                int(current.get("max_source_text_length", 0)),
+                int(next_item.get("max_source_text_length", 0)),
+            ),
+        }
+
+    def _combine_cluster_texts(self, texts: list[str]) -> str:
+        unique_texts: list[str] = []
+        for text in texts:
+            if text and text not in unique_texts:
+                unique_texts.append(str(text))
+        return "\n\n".join(unique_texts)
+
+    def _overlay_rect_for_source_rect(
+        self,
+        source_rect: QRect,
+        width: int,
+        height: int,
+        client_rect: QRect,
+    ) -> QRect:
+        return _clamp_overlay_rect(
+            source_rect.left(),
+            source_rect.top(),
+            width,
+            height,
+            client_rect,
+        )
+
+    def _stagger_all_text_cluster_rect(
+        self,
+        preferred_rect: QRect,
+        placed_rects: list[QRect],
+        client_rect: QRect,
+    ) -> QRect:
+        rect = QRect(preferred_rect)
+        for _ in range(8):
+            overlapping = [
+                other
+                for other in placed_rects
+                if other.intersects(rect)
+                and other.left() < rect.right()
+                and rect.left() < other.right()
+            ]
+            if not overlapping:
+                return rect
+
+            next_y = max(
+                other.top() + max(8, int(other.height() * self._all_text_vertical_shift_ratio))
+                for other in overlapping
+            )
+            shifted = _clamp_overlay_rect(
+                rect.x(),
+                next_y,
+                rect.width(),
+                rect.height(),
+                client_rect,
+            )
+            if shifted == rect:
+                return rect
+            rect = shifted
+
+        return rect
+
+    def _display_source_frame(self) -> list[tuple[TextBlock, str]]:
+        if not self._source_frame:
+            return []
+
+        fallback_blocks = [
+            block
+            for block, _text in self._source_frame
+            if block.fallback_only
+        ]
+        display_frame: list[tuple[TextBlock, str]] = []
+        for block, text in self._source_frame:
+            if not block.fallback_only and any(
+                _blocks_overlap(block, fallback_block) for fallback_block in fallback_blocks
+            ):
+                continue
+            display_frame.append((block, text))
+        return display_frame
 
     def _source_text_for_cursor(self, cursor_pos: QPoint, client_rect: QRect) -> str | None:
         if not self._source_frame:
@@ -1014,6 +1537,86 @@ class OverlayController(QObject):
         phase = int(elapsed / LOADING_FRAME_INTERVAL_SECONDS) % len(LOADING_INDENT_SEQUENCE)
         return " " * LOADING_INDENT_SEQUENCE[phase] + "..."
 
+    def _block_display_rect(self, block: TextBlock, client_rect: QRect) -> QRect | None:
+        pixel_rect = _pixel_hover_rect_for_block(block, client_rect)
+        if pixel_rect is not None:
+            return pixel_rect
+
+        tile_rect = _tile_hover_rect_for_block(block, client_rect, self._tile_size)
+        if tile_rect is not None:
+            return tile_rect
+
+        full_frame = self._source_frame if self._source_frame else [(block, block.text)]
+        cols, rows = _frame_grid_size(full_frame)
+        return _normalized_hover_rect_for_block(
+            block,
+            client_rect,
+            cols,
+            rows,
+            pad_x_cells=0.2,
+            pad_y_cells=0.2,
+        )
+
+    def _block_source_rect(self, block: TextBlock, client_rect: QRect) -> QRect | None:
+        pixel_spans = [
+            span
+            for span in block.spans
+            if span.pixel_left is not None
+            and span.pixel_right is not None
+            and span.pixel_top is not None
+            and span.pixel_bottom is not None
+        ]
+        if pixel_spans:
+            left = min(span.pixel_left for span in pixel_spans if span.pixel_left is not None)
+            right = max(span.pixel_right for span in pixel_spans if span.pixel_right is not None)
+            top = min(span.pixel_top for span in pixel_spans if span.pixel_top is not None)
+            bottom = max(span.pixel_bottom for span in pixel_spans if span.pixel_bottom is not None)
+            return QRect(
+                client_rect.left() + int(left),
+                client_rect.top() + int(top),
+                max(1, int(right - left)),
+                max(1, int(bottom - top)),
+            )
+
+        if self._tile_size is not None and block.spans:
+            tile_w, tile_h = self._tile_size
+            left_tile = min(span.x_start for span in block.spans)
+            right_tile = max(span.x_end for span in block.spans)
+            top_tile = min(span.y for span in block.spans)
+            bottom_tile = max(span.y for span in block.spans)
+            return QRect(
+                client_rect.left() + left_tile * tile_w,
+                client_rect.top() + top_tile * tile_h,
+                max(1, (right_tile - left_tile + 1) * tile_w),
+                max(1, (bottom_tile - top_tile + 1) * tile_h),
+            )
+
+        if block.spans:
+            full_frame = self._source_frame if self._source_frame else [(block, block.text)]
+            cols, rows = _frame_grid_size(full_frame)
+            return _normalized_hover_rect_for_block(
+                block,
+                client_rect,
+                cols,
+                rows,
+                pad_x_cells=0.0,
+                pad_y_cells=0.0,
+            )
+
+        return None
+
+    def _ensure_all_text_overlays(self, count: int) -> None:
+        while len(self._all_text_overlays) < count:
+            self._all_text_overlays.append(CursorOverlay(self._tooltip_opacity))
+
+    def _hide_all_text_overlays(self) -> None:
+        for overlay in self._all_text_overlays:
+            overlay.hide()
+
+    def _hide_all_overlays(self) -> None:
+        self._overlay.hide()
+        self._hide_all_text_overlays()
+
     def _poll_ctrl_key(self) -> None:
         ctrl_down = _is_ctrl_down()
         now = time.monotonic()
@@ -1022,23 +1625,23 @@ class OverlayController(QObject):
             and not self._ctrl_was_down
             and now - self._last_ctrl_toggle >= CTRL_TOGGLE_COOLDOWN_SECONDS
         ):
-            self.toggle_overlay("Ctrl")
+            self.cycle_overlay_mode("Ctrl")
             self._last_ctrl_toggle = now
         self._ctrl_was_down = ctrl_down
 
     def _refresh_state(self) -> None:
-        state = "ON" if self._overlay_enabled else "OFF"
+        state = self._overlay_mode.display_name
         window_state = "DF detected" if self._last_window_found else "waiting for Dwarf Fortress"
         connection = "connected" if self._connected else "waiting for text"
 
-        self._toggle_action.setText("Turn overlay off" if self._overlay_enabled else "Turn overlay on")
-        self._tray.setIcon(self._tray_icon_on if self._overlay_enabled else self._tray_icon_off)
+        self._toggle_action.setText("Turn overlay off" if self._overlay_mode is not OverlayMode.OFF else "Turn overlay on")
+        self._tray.setIcon(self._tray_icon_on if self._overlay_mode is not OverlayMode.OFF else self._tray_icon_off)
         self._tray.setToolTip(
-            f"DFJP overlay: {state}\n{window_state}\n{connection}\n{self._translator.engine_name}"
+            f"DFJP overlay: {state}\nCtrl: Hover -> All text -> Off\n{window_state}\n{connection}\n{self._translator.engine_name}"
         )
 
-        if not self._overlay_enabled:
-            self._overlay.hide()
+        if self._overlay_mode is OverlayMode.OFF:
+            self._hide_all_overlays()
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (
