@@ -13,10 +13,12 @@ DEFAULT_CONFIG_TOML = """[translator]
 # 使用する翻訳エンジン: "google" または "deepl"
 engine = "google"
 # 翻訳先言語コード
+# 例: "ja" / "en" / "ko" / "zh-CN"
 target_language = "ja"
 
 [deepl]
-# DeepL API キー。環境変数 DEEPL_API_KEY でも設定可能
+# DeepL API キー
+# 環境変数 DEEPL_API_KEY でも設定可能（設定されていればそちらを優先）
 api_key = ""
 
 [debug]

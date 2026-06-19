@@ -14,7 +14,51 @@ DFJP 起動手順
 
   dfjp-data\config.toml
 
-翻訳エンジンや DeepL API キーはこのファイルで設定できます。
+翻訳エンジン、翻訳先言語、DeepL API キーはこのファイルで設定できます。
+
+主な設定項目:
+
+- translator.engine
+    "google" または "deepl"
+
+- translator.target_language
+    翻訳先言語コード
+    例: ja / en / ko / zh-CN
+
+- deepl.api_key
+    DeepL を使う場合の API キー
+
+- debug.log
+    true にすると debug.log に動作ログを出力
+
+設定例:
+
+Google 翻訳で日本語表示
+
+  [translator]
+  engine = "google"
+  target_language = "ja"
+
+  [deepl]
+  api_key = ""
+
+  [debug]
+  log = true
+
+Google 翻訳で英語表示
+
+  [translator]
+  engine = "google"
+  target_language = "en"
+
+DeepL で日本語表示
+
+  [translator]
+  engine = "deepl"
+  target_language = "ja"
+
+  [deepl]
+  api_key = "YOUR_DEEPL_API_KEY"
 
 生成されるファイル
 ------------------
@@ -32,3 +76,4 @@ DFJP 起動手順
 - Dwarf Fortress の更新で RVA が変わった場合、次回起動時に自動再検出します。
 - 自動検出に失敗した場合は、DFJP.exe のエラーダイアログを確認してください。
 - dfhooks.dll は Dwarf Fortress 本体フォルダに置かれている必要があります。
+- 翻訳エンジンや翻訳先言語を切り替えたあとに古い訳文が残る場合は、dfjp-data\translation_cache.json を削除してください。

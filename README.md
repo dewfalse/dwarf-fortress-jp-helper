@@ -45,6 +45,64 @@ Windows 用の Dwarf Fortress 日本語プレイ補助ツールです。
 3. 初回起動時に `dfint-data/offsets-dfjp-auto.toml` を自動生成
 4. 翻訳ウインドウが表示されたら Dwarf Fortress を起動
 
+## 設定ファイル
+
+配布版では初回起動時に `dfjp-data/config.toml` が自動生成されます。
+ソースから実行する場合は `translator/config.toml` を編集してください。
+
+主な設定項目:
+
+- `translator.engine`
+  - 使用する翻訳エンジン
+  - `"google"` または `"deepl"`
+- `translator.target_language`
+  - 翻訳先言語コード
+  - 例: `ja`, `en`, `ko`, `zh-CN`
+- `deepl.api_key`
+  - DeepL を使う場合の API キー
+- `debug.log`
+  - `true` のとき、受信テキストや動作ログを `debug.log` に出力
+
+設定例:
+
+Google 翻訳で日本語表示:
+
+```toml
+[translator]
+engine = "google"
+target_language = "ja"
+
+[deepl]
+api_key = ""
+
+[debug]
+log = true
+```
+
+Google 翻訳で英語表示:
+
+```toml
+[translator]
+engine = "google"
+target_language = "en"
+```
+
+DeepL で日本語表示:
+
+```toml
+[translator]
+engine = "deepl"
+target_language = "ja"
+
+[deepl]
+api_key = "YOUR_DEEPL_API_KEY"
+```
+
+言語や翻訳エンジンを切り替えたあとに古い翻訳が残る場合は、翻訳キャッシュを削除してください。
+
+- 配布版: `dfjp-data/translation_cache.json`
+- ソース実行時: `translator/translation_cache.json`
+
 ## ソースからの開発
 
 Python 側:
