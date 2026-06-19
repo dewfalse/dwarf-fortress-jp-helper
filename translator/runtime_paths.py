@@ -28,6 +28,9 @@ tooltip_opacity = 0.78
 # all text モードで重なったツールチップを縦にどれくらいずらすか
 # 0.5 = 半分ずらす / 1.0 = 完全にずらす
 all_text_vertical_shift_ratio = 1.0
+# モード切り替えホットキー
+# "ctrl" / "shift" / "alt"
+toggle_hotkey = "ctrl"
 
 [debug]
 # true にすると受信したテキストを debug.log に記録する

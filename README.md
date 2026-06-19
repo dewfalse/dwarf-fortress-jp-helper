@@ -66,6 +66,9 @@ Windows 用の Dwarf Fortress 日本語プレイ補助ツールです。
 - `overlay.all_text_vertical_shift_ratio`
   - all text モードで重なったツールチップを縦にどれくらいずらすか
   - `0.5` = 半分ずらす / `1.0` = 完全にずらす
+- `overlay.toggle_hotkey`
+  - モード切り替えホットキー
+  - `"ctrl"` / `"shift"` / `"alt"`
 - `debug.log`
   - `true` のとき、受信テキストや動作ログを `debug.log` に出力
 
@@ -84,6 +87,7 @@ api_key = ""
 [overlay]
 tooltip_opacity = 0.78
 all_text_vertical_shift_ratio = 1.0
+toggle_hotkey = "ctrl"
 
 [debug]
 log = true
@@ -114,6 +118,14 @@ all text モードで元テキストを見やすくする例:
 [overlay]
 tooltip_opacity = 0.55
 all_text_vertical_shift_ratio = 1.0
+toggle_hotkey = "ctrl"
+```
+
+Shift キーでモード切り替えする例:
+
+```toml
+[overlay]
+toggle_hotkey = "shift"
 ```
 
 言語や翻訳エンジンを切り替えたあとに古い翻訳が残る場合は、翻訳キャッシュを削除してください。

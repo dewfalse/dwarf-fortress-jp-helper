@@ -14,6 +14,7 @@ class Config:
     deepl_api_key: str = field(default="")
     tooltip_opacity: float = 0.78
     all_text_vertical_shift_ratio: float = 1.0
+    toggle_hotkey: str = "ctrl"
     debug_log: bool = False
 
 
@@ -48,6 +49,9 @@ def load_config() -> Config:
         except (TypeError, ValueError):
             pass
         cfg.all_text_vertical_shift_ratio = max(0.1, min(2.0, cfg.all_text_vertical_shift_ratio))
+        cfg.toggle_hotkey = str(overlay.get("toggle_hotkey", cfg.toggle_hotkey)).strip().lower()
+        if cfg.toggle_hotkey not in {"ctrl", "shift", "alt"}:
+            cfg.toggle_hotkey = "ctrl"
 
         dbg = data.get("debug", {})
         cfg.debug_log = dbg.get("log", False)

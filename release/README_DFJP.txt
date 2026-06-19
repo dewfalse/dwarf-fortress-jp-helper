@@ -36,6 +36,10 @@ DFJP 起動手順
     all text モードで重なったツールチップを縦にどれくらいずらすか
     0.5 = 半分ずらす / 1.0 = 完全にずらす
 
+- overlay.toggle_hotkey
+    モード切り替えホットキー
+    "ctrl" / "shift" / "alt"
+
 - debug.log
     true にすると debug.log に動作ログを出力
 
@@ -53,6 +57,7 @@ Google 翻訳で日本語表示
   [overlay]
   tooltip_opacity = 0.78
   all_text_vertical_shift_ratio = 1.0
+  toggle_hotkey = "ctrl"
 
   [debug]
   log = true
@@ -77,6 +82,12 @@ all text モードで元テキストを見やすくする例
   [overlay]
   tooltip_opacity = 0.55
   all_text_vertical_shift_ratio = 1.0
+  toggle_hotkey = "ctrl"
+
+Shift キーでモード切り替えする例
+
+  [overlay]
+  toggle_hotkey = "shift"
 
 生成されるファイル
 ------------------

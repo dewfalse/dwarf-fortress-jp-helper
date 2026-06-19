@@ -428,6 +428,37 @@ def _is_ctrl_down() -> bool:
     )
 
 
+def _normalize_toggle_hotkey(name: str) -> str:
+    normalized = str(name).strip().lower()
+    if normalized in {"ctrl", "shift", "alt"}:
+        return normalized
+    return "ctrl"
+
+
+def _toggle_hotkey_display_name(name: str) -> str:
+    normalized = _normalize_toggle_hotkey(name)
+    if normalized == "shift":
+        return "Shift"
+    if normalized == "alt":
+        return "Alt"
+    return "Ctrl"
+
+
+def _is_toggle_hotkey_down(name: str) -> bool:
+    normalized = _normalize_toggle_hotkey(name)
+    if normalized == "shift":
+        return bool(
+            win32api.GetAsyncKeyState(win32con.VK_LSHIFT) & 0x8000
+            or win32api.GetAsyncKeyState(win32con.VK_RSHIFT) & 0x8000
+        )
+    if normalized == "alt":
+        return bool(
+            win32api.GetAsyncKeyState(win32con.VK_LMENU) & 0x8000
+            or win32api.GetAsyncKeyState(win32con.VK_RMENU) & 0x8000
+        )
+    return _is_ctrl_down()
+
+
 def _build_tray_icon(text_color: QColor) -> QIcon:
     size = 64
     pixmap = QPixmap(size, size)
@@ -757,6 +788,8 @@ class OverlayController(QObject):
         self._all_text_vertical_shift_ratio = _clamp_all_text_vertical_shift_ratio(
             getattr(self._config, "all_text_vertical_shift_ratio", DEFAULT_ALL_TEXT_VERTICAL_SHIFT_RATIO)
         )
+        self._toggle_hotkey = _normalize_toggle_hotkey(getattr(self._config, "toggle_hotkey", "ctrl"))
+        self._toggle_hotkey_label = _toggle_hotkey_display_name(self._toggle_hotkey)
         self._translator = Translator()
         self._reader = PipeReader(on_frame=self.on_frame)
         self._overlay = CursorOverlay(self._tooltip_opacity)
@@ -1618,14 +1651,14 @@ class OverlayController(QObject):
         self._hide_all_text_overlays()
 
     def _poll_ctrl_key(self) -> None:
-        ctrl_down = _is_ctrl_down()
+        ctrl_down = _is_toggle_hotkey_down(self._toggle_hotkey)
         now = time.monotonic()
         if (
             ctrl_down
             and not self._ctrl_was_down
             and now - self._last_ctrl_toggle >= CTRL_TOGGLE_COOLDOWN_SECONDS
         ):
-            self.cycle_overlay_mode("Ctrl")
+            self.cycle_overlay_mode(self._toggle_hotkey_label)
             self._last_ctrl_toggle = now
         self._ctrl_was_down = ctrl_down
 
@@ -1637,7 +1670,7 @@ class OverlayController(QObject):
         self._toggle_action.setText("Turn overlay off" if self._overlay_mode is not OverlayMode.OFF else "Turn overlay on")
         self._tray.setIcon(self._tray_icon_on if self._overlay_mode is not OverlayMode.OFF else self._tray_icon_off)
         self._tray.setToolTip(
-            f"DFJP overlay: {state}\nCtrl: Hover -> All text -> Off\n{window_state}\n{connection}\n{self._translator.engine_name}"
+            f"DFJP overlay: {state}\n{self._toggle_hotkey_label}: Hover -> All text -> Off\n{window_state}\n{connection}\n{self._translator.engine_name}"
         )
 
         if self._overlay_mode is OverlayMode.OFF:
