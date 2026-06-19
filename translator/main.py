@@ -12,10 +12,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-
-from PyQt6.QtWidgets import QApplication
-
-from gui import OverlayController
 from runtime_paths import (
     APP_NAME,
     DF_EXE_NAME,
@@ -125,7 +121,43 @@ def show_startup_error(message: str) -> None:
         print(message, file=sys.stderr)
 
 
+def configure_dpi_awareness() -> None:
+    user32 = getattr(ctypes.windll, "user32", None)
+    shcore = getattr(ctypes.windll, "shcore", None)
+
+    if user32 is not None:
+        try:
+            per_monitor_v2 = ctypes.c_void_p(-4)
+            if user32.SetProcessDpiAwarenessContext(per_monitor_v2):
+                logging.info("Enabled DPI awareness: Per Monitor v2")
+                return
+        except Exception:
+            pass
+
+    if shcore is not None:
+        try:
+            process_per_monitor_dpi_aware = 2
+            shcore.SetProcessDpiAwareness(process_per_monitor_dpi_aware)
+            logging.info("Enabled DPI awareness: Per Monitor")
+            return
+        except Exception:
+            pass
+
+    if user32 is not None:
+        try:
+            if user32.SetProcessDPIAware():
+                logging.info("Enabled DPI awareness: System")
+        except Exception:
+            pass
+
+
 def run_app(argv: list[str]) -> int:
+    configure_dpi_awareness()
+
+    from PyQt6.QtWidgets import QApplication
+
+    from gui import OverlayController
+
     app = QApplication(argv)
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)

@@ -20,8 +20,20 @@
 //   +0x80 viewport_zoom_factor (int32_t, 4 bytes)
 //   +0x84 screenx         (int32_t) ← テキストカーソル X
 //   +0x88 screeny         (int32_t) ← テキストカーソル Y
+//   +0x1C0 mouse_x         (int32_t) ← マウスのタイル X
+//   +0x1C4 mouse_y         (int32_t) ← マウスのタイル Y
+//   +0x1C8 precise_mouse_x (int32_t) ← マウスのピクセル X
+//   +0x1CC precise_mouse_y (int32_t) ← マウスのピクセル Y
+//   +0x1D8 tile_pixel_x    (int32_t) ← タイル幅
+//   +0x1DC tile_pixel_y    (int32_t) ← タイル高さ
 static constexpr ptrdiff_t GPS_SCREENX_OFF = 0x84;
 static constexpr ptrdiff_t GPS_SCREENY_OFF = 0x88;
+static constexpr ptrdiff_t GPS_MOUSE_X_OFF        = 0x1C0;
+static constexpr ptrdiff_t GPS_MOUSE_Y_OFF        = 0x1C4;
+static constexpr ptrdiff_t GPS_MOUSE_PIXEL_X_OFF  = 0x1C8;
+static constexpr ptrdiff_t GPS_MOUSE_PIXEL_Y_OFF  = 0x1CC;
+static constexpr ptrdiff_t GPS_TILE_PIXEL_X_OFF   = 0x1D8;
+static constexpr ptrdiff_t GPS_TILE_PIXEL_Y_OFF   = 0x1DC;
 
 // rich text 描画オブジェクトのフィールド（53.13 steam win64 の逆アセンブルより）
 // rich_text_render(this):
@@ -39,7 +51,7 @@ static std::unordered_map<uintptr_t, std::string> g_rich_text_by_layout;
 
 // rich_text_render() 内部から呼ばれる addst() の単語イベントを抑制する。
 // 入れ子呼び出しにも対応するため bool ではなく深度で管理する。
-static thread_local uint32_t g_suppress_addst_depth = 0;
+static thread_local uint64_t g_active_rich_group_id = 0;
 
 static std::string clean_rich_text(std::string_view src) {
     std::string out;
@@ -105,13 +117,33 @@ static addst_fn orig_addst     = nullptr;
 static addst_fn orig_addst_top = nullptr;
 
 static void intercept_text(uintptr_t gps, const CxxString* src, uint8_t justify) {
-    if (g_suppress_addst_depth != 0) return;
     if (!src) return;
     auto sv = src->view();
     if (sv.empty()) return;
     auto x = *reinterpret_cast<const int32_t*>(gps + GPS_SCREENX_OFF);
     auto y = *reinterpret_cast<const int32_t*>(gps + GPS_SCREENY_OFF);
-    pipe_add_text(sv, justify, x, y);
+    auto mouse_x = *reinterpret_cast<const int32_t*>(gps + GPS_MOUSE_X_OFF);
+    auto mouse_y = *reinterpret_cast<const int32_t*>(gps + GPS_MOUSE_Y_OFF);
+    auto mouse_pixel_x = *reinterpret_cast<const int32_t*>(gps + GPS_MOUSE_PIXEL_X_OFF);
+    auto mouse_pixel_y = *reinterpret_cast<const int32_t*>(gps + GPS_MOUSE_PIXEL_Y_OFF);
+    auto tile_w = *reinterpret_cast<const int32_t*>(gps + GPS_TILE_PIXEL_X_OFF);
+    auto tile_h = *reinterpret_cast<const int32_t*>(gps + GPS_TILE_PIXEL_Y_OFF);
+    PipeTextKind kind =
+        (g_active_rich_group_id != 0) ? PipeTextKind::RichToken : PipeTextKind::Normal;
+    pipe_add_text(
+        sv,
+        justify,
+        x,
+        y,
+        mouse_x,
+        mouse_y,
+        mouse_pixel_x,
+        mouse_pixel_y,
+        tile_w,
+        tile_h,
+        kind,
+        g_active_rich_group_id
+    );
 }
 
 static void hooked_addst(uintptr_t gps, const CxxString* src, uint8_t justify, uint32_t space) {
@@ -176,21 +208,30 @@ static void hooked_rich_text_render(uintptr_t widget) {
     }
     ReleaseSRWLockShared(&g_rich_text_lock);
 
-    if (captured.empty()) {
-        orig_rich_text_render(widget);
-        return;
-    }
-
     std::string cleaned = clean_rich_text(captured);
     if (!cleaned.empty()) {
         auto x = *reinterpret_cast<const int32_t*>(widget + RICH_WIDGET_X_OFF);
         auto y = *reinterpret_cast<const int32_t*>(widget + RICH_WIDGET_Y_OFF);
-        pipe_add_text(cleaned, 0, x, y);
+        pipe_add_text(
+            cleaned,
+            0,
+            x,
+            y,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            PipeTextKind::RichBlock,
+            static_cast<uint64_t>(layout)
+        );
     }
 
-    ++g_suppress_addst_depth;
+    uint64_t previous_group_id = g_active_rich_group_id;
+    g_active_rich_group_id = static_cast<uint64_t>(layout);
     orig_rich_text_render(widget);
-    --g_suppress_addst_depth;
+    g_active_rich_group_id = previous_group_id;
 }
 
 // ---------------------------------------------------------------------
