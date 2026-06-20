@@ -41,7 +41,7 @@ MIN_ROWS = 25
 TOOLTIP_MARGIN = 12
 MIN_TOOLTIP_WIDTH = 180
 COMPACT_TOOLTIP_MARGIN = 0
-COMPACT_MIN_TOOLTIP_WIDTH = 64
+COMPACT_MIN_TOOLTIP_WIDTH = 72
 ALL_TEXT_GAP = 8
 ALL_TEXT_CLUSTER_MARGIN = 6
 ALL_TEXT_COLUMN_MERGE_GAP = 28
@@ -623,7 +623,7 @@ class CursorOverlay(QWidget):
         self._padding_y = 6 if compact else 10
         self._padding_x = 8 if compact else 12
         self._border_radius = 7 if compact else 9
-        self._width_padding = self._padding_x * 2 + 4
+        self._width_padding = self._padding_x * 2 + (14 if compact else 6)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -647,6 +647,7 @@ class CursorOverlay(QWidget):
         self._click_through_ready = False
         self._prepared_text: str | None = None
         self._prepared_width: int | None = None
+        self._prepared_word_wrap: bool | None = None
 
     def set_tooltip_opacity(self, tooltip_opacity: float) -> None:
         clamped = _clamp_tooltip_opacity(tooltip_opacity)
@@ -697,18 +698,34 @@ class CursorOverlay(QWidget):
 
     def _prepare_text(self, text: str) -> None:
         metrics = QFontMetrics(self._label.font())
+        text_lines = text.splitlines()
         longest_line_width = max(
-            (metrics.horizontalAdvance(line) for line in text.splitlines()),
+            (metrics.horizontalAdvance(line) for line in text_lines),
             default=metrics.horizontalAdvance(text),
+        )
+        single_line_text = len(text_lines) <= 1
+        disable_wrap_for_single_line = (
+            self._compact
+            and single_line_text
+            and (longest_line_width + self._width_padding + 10) <= self._content_width
         )
         target_width = min(
             self._content_width,
-            max(self._min_width, longest_line_width + self._width_padding),
+            max(
+                self._min_width,
+                longest_line_width + self._width_padding + (10 if disable_wrap_for_single_line else 0),
+            ),
         )
-        if text == self._prepared_text and target_width == self._prepared_width:
+        if (
+            text == self._prepared_text
+            and target_width == self._prepared_width
+            and disable_wrap_for_single_line == self._prepared_word_wrap
+        ):
             return
         self._prepared_text = text
         self._prepared_width = target_width
+        self._prepared_word_wrap = disable_wrap_for_single_line
+        self._label.setWordWrap(not disable_wrap_for_single_line)
         self._label.setFixedWidth(target_width)
         self._label.setText(text)
         self._label.adjustSize()
