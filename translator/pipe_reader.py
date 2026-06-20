@@ -19,6 +19,7 @@ RECONNECT_INTERVAL = 2.0
 TEXT_KIND_NORMAL = 0
 TEXT_KIND_RICH_BLOCK = 1
 TEXT_KIND_RICH_TOKEN = 2
+GAME_TEXT_FALLBACK_ENCODING = "cp437"
 
 
 @dataclass(frozen=True)
@@ -89,59 +90,65 @@ class PipeReader:
                 buf += data
                 while b"\n" in buf:
                     raw_line, buf = buf.split(b"\n", 1)
-                    line = raw_line.decode("utf-8", errors="replace")
-                    self._handle_line(line, entries)
+                    self._handle_raw_line(raw_line, entries)
             except pywintypes.error:
                 break
 
-    def _handle_line(self, line: str, entries: list[TextEntry]) -> None:
-        if line == "F":
+    def _decode_text_field(self, raw: bytes) -> str:
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            decoded = raw.decode(GAME_TEXT_FALLBACK_ENCODING, errors="replace")
+            if "\ufffd" not in decoded:
+                return decoded
+            return raw.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _parse_int_field(raw: bytes, default: int) -> int:
+        try:
+            return int(raw.decode("ascii"))
+        except (UnicodeDecodeError, ValueError):
+            return default
+
+    def _handle_raw_line(self, raw_line: bytes, entries: list[TextEntry]) -> None:
+        if raw_line == b"F":
             if entries:
                 self._write_log(entries)
                 self.on_frame(list(entries))
             entries.clear()
             return
 
-        if not line.startswith("T\t"):
+        if not raw_line.startswith(b"T\t"):
             return
 
-        parts = line[2:].split("\t")
+        parts = raw_line[2:].split(b"\t")
         if len(parts) >= 12:
-            try:
-                kind = int(parts[0])
-                raw_group_id = int(parts[1])
-                justify = int(parts[2])
-                x = int(parts[3])
-                y = int(parts[4])
-                mouse_x = int(parts[5])
-                mouse_y = int(parts[6])
-                mouse_pixel_x = int(parts[7])
-                mouse_pixel_y = int(parts[8])
-                tile_w = int(parts[9])
-                tile_h = int(parts[10])
-            except ValueError:
-                kind = TEXT_KIND_NORMAL
-                raw_group_id = 0
-                justify, x, y = 0, 0, 0
-                mouse_x = mouse_y = mouse_pixel_x = mouse_pixel_y = tile_w = tile_h = None
-            text = "\t".join(parts[11:])
+            kind = self._parse_int_field(parts[0], TEXT_KIND_NORMAL)
+            raw_group_id = self._parse_int_field(parts[1], 0)
+            justify = self._parse_int_field(parts[2], 0)
+            x = self._parse_int_field(parts[3], 0)
+            y = self._parse_int_field(parts[4], 0)
+            mouse_x = self._parse_int_field(parts[5], -1)
+            mouse_y = self._parse_int_field(parts[6], -1)
+            mouse_pixel_x = self._parse_int_field(parts[7], -1)
+            mouse_pixel_y = self._parse_int_field(parts[8], -1)
+            tile_w = self._parse_int_field(parts[9], -1)
+            tile_h = self._parse_int_field(parts[10], -1)
+            text = self._decode_text_field(b"\t".join(parts[11:]))
         elif len(parts) == 4:
             kind = TEXT_KIND_NORMAL
             raw_group_id = 0
-            try:
-                justify = int(parts[0])
-                x = int(parts[1])
-                y = int(parts[2])
-            except ValueError:
-                justify, x, y = 0, 0, 0
+            justify = self._parse_int_field(parts[0], 0)
+            x = self._parse_int_field(parts[1], 0)
+            y = self._parse_int_field(parts[2], 0)
             mouse_x = mouse_y = mouse_pixel_x = mouse_pixel_y = tile_w = tile_h = None
-            text = parts[3]
+            text = self._decode_text_field(parts[3])
         else:
             kind = TEXT_KIND_NORMAL
             raw_group_id = 0
             justify, x, y = 0, 0, 0
             mouse_x = mouse_y = mouse_pixel_x = mouse_pixel_y = tile_w = tile_h = None
-            text = parts[-1] if parts else ""
+            text = self._decode_text_field(parts[-1]) if parts else ""
 
         group_id = raw_group_id if raw_group_id > 0 else None
         mouse_x = mouse_x if mouse_x is not None and mouse_x >= 0 else None
