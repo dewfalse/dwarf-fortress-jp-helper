@@ -8,7 +8,7 @@ Windows 版 Dwarf Fortress 向けの日本語プレイ補助ツールです。
 
 ゲーム画面と翻訳オーバーレイの例です。
 
-![Dwarf Fortress and DFJP translation overlay](docs/screenshot_01.png)
+![Dwarf Fortress and DFJP translation overlay](screenshot_02.png)
 
 ## 主な機能
 
