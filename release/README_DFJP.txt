@@ -30,7 +30,7 @@ DFJP 使い方
 
 - overlay.all_text_vertical_shift_ratio
     all text モードで重なったツールチップを縦にどれくらいずらすか
-    0.5 = 半分ずらす / 1.0 = 完全にずらす
+    0.5 = 半分ずらす / 0.85 = やや詰める / 1.0 = 完全にずらす
 
 - overlay.toggle_hotkey
     オーバーレイ表示切替キー
@@ -58,7 +58,7 @@ Google Translate で日本語表示
 
   [overlay]
   tooltip_opacity = 0.78
-  all_text_vertical_shift_ratio = 1.0
+  all_text_vertical_shift_ratio = 0.85
   toggle_hotkey = "ctrl"
 
   [manual_rules]

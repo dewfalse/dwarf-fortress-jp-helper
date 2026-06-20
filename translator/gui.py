@@ -40,13 +40,16 @@ MIN_COLUMNS = 80
 MIN_ROWS = 25
 TOOLTIP_MARGIN = 12
 MIN_TOOLTIP_WIDTH = 180
+COMPACT_TOOLTIP_MARGIN = 0
+COMPACT_MIN_TOOLTIP_WIDTH = 64
 ALL_TEXT_GAP = 8
 ALL_TEXT_CLUSTER_MARGIN = 6
 ALL_TEXT_COLUMN_MERGE_GAP = 28
 ALL_TEXT_MAX_CLUSTER_ITEMS = 3
-DEFAULT_ALL_TEXT_VERTICAL_SHIFT_RATIO = 1.0
+DEFAULT_ALL_TEXT_VERTICAL_SHIFT_RATIO = 0.85
 ALL_TEXT_MAX_SOURCE_VERTICAL_GAP = 48
 ALL_TEXT_MAX_MERGE_SOURCE_TEXT_LENGTH = 80
+ALL_TEXT_MIN_VERTICAL_SHIFT = 4
 DEFAULT_TOOLTIP_OPACITY = 0.78
 
 
@@ -597,7 +600,11 @@ def _normalized_hover_rect_for_block(
 
 
 class CursorOverlay(QWidget):
-    def __init__(self, tooltip_opacity: float = DEFAULT_TOOLTIP_OPACITY) -> None:
+    def __init__(
+        self,
+        tooltip_opacity: float = DEFAULT_TOOLTIP_OPACITY,
+        compact: bool = False,
+    ) -> None:
         super().__init__(
             None,
             Qt.WindowType.Tool
@@ -610,8 +617,21 @@ class CursorOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
+        self._compact = compact
+        self._outer_margin = COMPACT_TOOLTIP_MARGIN if compact else TOOLTIP_MARGIN
+        self._min_width = COMPACT_MIN_TOOLTIP_WIDTH if compact else MIN_TOOLTIP_WIDTH
+        self._padding_y = 6 if compact else 10
+        self._padding_x = 8 if compact else 12
+        self._border_radius = 7 if compact else 9
+        self._width_padding = self._padding_x * 2 + 4
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(TOOLTIP_MARGIN, TOOLTIP_MARGIN, TOOLTIP_MARGIN, TOOLTIP_MARGIN)
+        layout.setContentsMargins(
+            self._outer_margin,
+            self._outer_margin,
+            self._outer_margin,
+            self._outer_margin,
+        )
 
         self._label = QLabel()
         self._label.setWordWrap(True)
@@ -644,8 +664,8 @@ class CursorOverlay(QWidget):
                 color: #f3f3f3;
                 background-color: rgba(16, 16, 16, {background_alpha});
                 border: 1px solid rgba(255, 255, 255, {border_alpha});
-                border-radius: 9px;
-                padding: 10px 12px;
+                border-radius: {self._border_radius}px;
+                padding: {self._padding_y}px {self._padding_x}px;
                 font-family: 'Meiryo UI', 'Yu Gothic UI', sans-serif;
                 font-size: 13px;
             }}
@@ -683,7 +703,7 @@ class CursorOverlay(QWidget):
         )
         target_width = min(
             self._content_width,
-            max(MIN_TOOLTIP_WIDTH, longest_line_width + 28),
+            max(self._min_width, longest_line_width + self._width_padding),
         )
         if text == self._prepared_text and target_width == self._prepared_width:
             return
@@ -1345,8 +1365,9 @@ class OverlayController(QObject):
         height: int,
         client_rect: QRect,
     ) -> QRect:
+        preferred_x = source_rect.left() + (source_rect.width() - width) // 2
         return _clamp_overlay_rect(
-            source_rect.left(),
+            preferred_x,
             source_rect.top(),
             width,
             height,
@@ -1372,7 +1393,10 @@ class OverlayController(QObject):
                 return rect
 
             next_y = max(
-                other.top() + max(8, int(other.height() * self._all_text_vertical_shift_ratio))
+                other.top() + max(
+                    ALL_TEXT_MIN_VERTICAL_SHIFT,
+                    int(other.height() * self._all_text_vertical_shift_ratio),
+                )
                 for other in overlapping
             )
             shifted = _clamp_overlay_rect(
@@ -1641,7 +1665,7 @@ class OverlayController(QObject):
 
     def _ensure_all_text_overlays(self, count: int) -> None:
         while len(self._all_text_overlays) < count:
-            self._all_text_overlays.append(CursorOverlay(self._tooltip_opacity))
+            self._all_text_overlays.append(CursorOverlay(self._tooltip_opacity, compact=True))
 
     def _hide_all_text_overlays(self) -> None:
         for overlay in self._all_text_overlays:

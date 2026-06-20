@@ -27,7 +27,7 @@ api_key = ""
 tooltip_opacity = 0.78
 # all text モードで重なったツールチップを縦にどれくらいずらすか
 # 0.5 = 半分ずらす / 1.0 = 完全にずらす
-all_text_vertical_shift_ratio = 1.0
+all_text_vertical_shift_ratio = 0.85
 # オーバーレイ表示切替キー
 # "ctrl" / "shift" / "alt"
 toggle_hotkey = "ctrl"
