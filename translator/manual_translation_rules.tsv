@@ -1,0 +1,15 @@
+# DFJP manual translation rules
+# 1 line = 1 rule
+# exact<TAB>source<TAB>target
+# regex<TAB>pattern<TAB>replacement
+#
+# blank target means "TODO entry" and does not override machine translation
+# escaped sequences inside a field:
+#   \n = newline
+#   \t = tab
+#   \r = carriage return
+#   \\ = backslash
+#
+# examples:
+# exact	Start new game in existing world	既存の世界で新しいゲームを始める
+# regex	^(\d+)(?:st|nd|rd|th) Slate$	\1番目のスレート

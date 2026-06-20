@@ -203,6 +203,8 @@ Copy-Item -LiteralPath $CmdFile.FullName -Destination $StageDir
 Copy-Item -LiteralPath (Join-Path $ReleaseDir "README_DFJP.txt") -Destination $StageDir
 Copy-Item -LiteralPath (Join-Path $TranslatorDir "config.toml") `
     -Destination (Join-Path $StageDir "dfjp-data\config.toml")
+Copy-Item -LiteralPath (Join-Path $TranslatorDir "manual_translation_rules.tsv") `
+    -Destination (Join-Path $StageDir "dfjp-data\manual_translation_rules.tsv")
 
 Write-Host "[3/3] Creating ZIP..."
 Compress-Archive -Path (Join-Path $StageDir "*") -DestinationPath $ZipPath

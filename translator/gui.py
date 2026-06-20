@@ -839,6 +839,7 @@ class OverlayController(QObject):
 
         self._connected = True
         self._source_frame = [(block, block.text) for block in blocks]
+        self._translator.collect_detected_texts([block.text for block in blocks])
         tile_info = next(
             (
                 entry

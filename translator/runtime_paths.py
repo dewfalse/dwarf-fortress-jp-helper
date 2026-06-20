@@ -6,6 +6,7 @@ from pathlib import Path
 APP_NAME = "DFJP"
 DATA_DIR_NAME = "dfjp-data"
 OFFSETS_FILE_NAME = "offsets-dfjp-auto.toml"
+MANUAL_RULES_FILE_NAME = "manual_translation_rules.tsv"
 DF_EXE_NAME = "Dwarf Fortress.exe"
 HOOK_DLL_NAME = "dfhooks.dll"
 
@@ -18,23 +19,45 @@ target_language = "ja"
 
 [deepl]
 # DeepL API キー
-# 環境変数 DEEPL_API_KEY でも設定可能（設定されていればそちらを優先）
+# 環境変数 DEEPL_API_KEY でも設定できます
 api_key = ""
 
 [overlay]
-# 翻訳ツールチップの透過率（0.05 ～ 1.0）
-# 1.0 に近いほど濃く、低いほど元テキストが見えやすい
+# 翻訳ツールチップの透過率 (0.05 ～ 1.0)
 tooltip_opacity = 0.78
 # all text モードで重なったツールチップを縦にどれくらいずらすか
 # 0.5 = 半分ずらす / 1.0 = 完全にずらす
 all_text_vertical_shift_ratio = 1.0
-# モード切り替えホットキー
+# オーバーレイ表示切替キー
 # "ctrl" / "shift" / "alt"
 toggle_hotkey = "ctrl"
 
+[manual_rules]
+# exact<TAB>source<TAB>target / regex<TAB>pattern<TAB>replacement
+# true にすると、ゲーム中に検出したテキストを
+# manual_translation_rules.tsv に exact ルールの空訳文で追記します
+collect_detected_text = false
+
 [debug]
-# true にすると受信したテキストを debug.log に記録する
+# true にすると詳細ログを debug.log に出力します
 log = true
+"""
+
+DEFAULT_MANUAL_RULES_TSV = """# DFJP manual translation rules
+# 1 line = 1 rule
+# exact<TAB>source<TAB>target
+# regex<TAB>pattern<TAB>replacement
+#
+# blank target means "TODO entry" and does not override machine translation
+# escaped sequences inside a field:
+#   \\n = newline
+#   \\t = tab
+#   \\r = carriage return
+#   \\\\ = backslash
+#
+# examples:
+# exact\tStart new game in existing world\t既存の世界で新しいゲームを始める
+# regex\t^(\\d+)(?:st|nd|rd|th) Slate$\t\\1番目のスレート
 """
 
 
@@ -85,6 +108,18 @@ def ensure_default_config() -> Path:
 def cache_path() -> Path:
     ensure_data_dir()
     return data_dir() / "translation_cache.json"
+
+
+def manual_rules_path() -> Path:
+    ensure_data_dir()
+    return data_dir() / MANUAL_RULES_FILE_NAME
+
+
+def ensure_manual_rules_file() -> Path:
+    path = manual_rules_path()
+    if not path.exists():
+        path.write_text(DEFAULT_MANUAL_RULES_TSV, encoding="utf-8")
+    return path
 
 
 def debug_log_path() -> Path:
