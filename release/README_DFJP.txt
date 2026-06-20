@@ -7,6 +7,7 @@ DFJP 使い方
 2. DFJP.exe または「DFJP起動.cmd」を実行します。
 3. 初回起動時は RVA を自動検出して dfint-data\offsets-dfjp-auto.toml を作成します。
 4. 翻訳表示が出たら、そのまま Dwarf Fortress を起動してください。
+5. 起動後は、タスクトレイアイコンのクリックで表示 ON/OFF、設定したホットキーで Hover -> All text -> Off を循環切替できます。
 
 設定
 ----
@@ -17,24 +18,34 @@ DFJP 使い方
 
 - translator.engine
     "google" または "deepl"
+    デフォルトは "google"
 
 - translator.target_language
     翻訳先言語コード
     例: ja / en / ko / zh-CN
+    デフォルトは ja
 
 - deepl.api_key
     DeepL を使う場合の API キー
 
 - overlay.tooltip_opacity
     翻訳ツールチップの透過率
+    デフォルトは 0.78
 
 - overlay.all_text_vertical_shift_ratio
     all text モードで重なったツールチップを縦にどれくらいずらすか
-    0.5 = 半分ずらす / 0.85 = やや詰める / 1.0 = 完全にずらす
+    0.5 = 半分ずらす / 1.0 = 完全にずらす
+    デフォルトは 1.0
+
+- overlay.translation_font_size
+    翻訳テキストのフォントサイズ
+    デフォルトは 12.0
 
 - overlay.toggle_hotkey
     オーバーレイ表示切替キー
+    押すたびに Hover -> All text -> Off を切り替え
     "ctrl" / "shift" / "alt"
+    デフォルトは "ctrl"
 
 - manual_rules.collect_detected_text
     true にすると、ゲーム中に検出したテキストを
@@ -44,6 +55,7 @@ DFJP 使い方
 
 - debug.log
     true のとき debug.log に詳細ログを出力
+    配布時のデフォルト設定は true
 
 設定例
 ------
@@ -58,7 +70,8 @@ Google Translate で日本語表示
 
   [overlay]
   tooltip_opacity = 0.78
-  all_text_vertical_shift_ratio = 0.85
+  all_text_vertical_shift_ratio = 1.0
+  translation_font_size = 12.0
   toggle_hotkey = "ctrl"
 
   [manual_rules]
@@ -82,10 +95,23 @@ DeepL で日本語表示
   [deepl]
   api_key = "YOUR_DEEPL_API_KEY"
 
+all text モードを少し透けさせる例
+
+  [overlay]
+  tooltip_opacity = 0.55
+  all_text_vertical_shift_ratio = 1.0
+  translation_font_size = 12.0
+  toggle_hotkey = "ctrl"
+
 Shift キーで切り替える例
 
   [overlay]
   toggle_hotkey = "shift"
+
+日本語を少し小さめに表示する例
+
+  [overlay]
+  translation_font_size = 11.0
 
 検出テキストを収集する例
 

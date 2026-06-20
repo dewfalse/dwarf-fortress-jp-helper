@@ -1,14 +1,14 @@
 # dwarf-fortress-jp-helper
 
 Windows 版 Dwarf Fortress 向けの日本語プレイ補助ツールです。
-`dfhooks.dll` でゲーム内テキストをフックし、別ウインドウまたはオーバーレイで翻訳結果を表示します。
+`dfhooks.dll` でゲーム内テキストをフックし、タスクトレイ常駐型のオーバーレイで翻訳結果を表示します。
 本体そのものを日本語化するものではなく、英語テキストの理解を補助することを目的にしています。
 
 ## Screenshot
 
-ゲーム画面と翻訳表示の例です。
+ゲーム画面と翻訳オーバーレイの例です。
 
-![Dwarf Fortress and DFJP translation window](docs/screenshot_01.png)
+![Dwarf Fortress and DFJP translation overlay](docs/screenshot_01.png)
 
 ## 主な機能
 
@@ -16,6 +16,7 @@ Windows 版 Dwarf Fortress 向けの日本語プレイ補助ツールです。
 - Google Translate / DeepL を使った翻訳
 - カーソル位置のテキストだけ表示する hover モード
 - 画面内テキスト全体に重ねて表示する all text モード
+- タスクトレイ常駐。トレイアイコンで表示 ON/OFF、ホットキーで `Hover -> All text -> Off` を循環切替
 - RVA 自動検出
 - Python 未導入環境でも使える `DFJP.exe`
 - TSV 形式の手動翻訳ルール
@@ -44,7 +45,8 @@ Windows 版 Dwarf Fortress 向けの日本語プレイ補助ツールです。
 1. ZIP の中身を `Dwarf Fortress.exe` があるフォルダへ展開します。
 2. `DFJP.exe` または `DFJP起動.cmd` を実行します。
 3. 初回起動時は RVA を自動検出して `dfint-data/offsets-dfjp-auto.toml` を作成します。
-4. 翻訳ウインドウまたはオーバーレイが表示されたら、そのまま Dwarf Fortress を起動します。
+4. 翻訳オーバーレイの準備ができたら、そのまま Dwarf Fortress を起動します。
+5. 起動後は、タスクトレイアイコンのクリックで表示 ON/OFF、設定したホットキーで `Hover -> All text -> Off` を循環切替できます。
 
 ## 設定ファイル
 
@@ -56,24 +58,34 @@ Windows 版 Dwarf Fortress 向けの日本語プレイ補助ツールです。
 - `translator.engine`
   - 使用する翻訳エンジン
   - `"google"` または `"deepl"`
+  - デフォルトは `"google"`
 - `translator.target_language`
   - 翻訳先言語コード
   - 例: `ja`, `en`, `ko`, `zh-CN`
+  - デフォルトは `ja`
 - `deepl.api_key`
   - DeepL を使う場合の API キー
 - `overlay.tooltip_opacity`
   - 翻訳ツールチップの透過率
+  - デフォルトは `0.78`
 - `overlay.all_text_vertical_shift_ratio`
   - all text モードで重なったツールチップを縦にどれくらいずらすか
-  - `0.5` = 半分ずらす / `0.85` = やや詰める / `1.0` = 完全にずらす
+  - `0.5` = 半分ずらす / `1.0` = 完全にずらす
+  - デフォルトは `1.0`
+- `overlay.translation_font_size`
+  - 翻訳テキストのフォントサイズ
+  - デフォルトは `12.0`
 - `overlay.toggle_hotkey`
   - オーバーレイ表示切替キー
+  - 押すたびに `Hover -> All text -> Off` を切替
   - `"ctrl"` / `"shift"` / `"alt"`
+  - デフォルトは `"ctrl"`
 - `manual_rules.collect_detected_text`
   - `true` にすると、ゲーム中に検出したテキストを `manual_translation_rules.tsv` に `exact<TAB>原文<TAB>` の形で追記
   - 手動翻訳候補の収集用。デフォルトは `false`
 - `debug.log`
   - `true` のとき、詳細ログを `debug.log` に出力
+  - 配布時のデフォルト設定は `true`
 
 設定例:
 
@@ -89,7 +101,8 @@ api_key = ""
 
 [overlay]
 tooltip_opacity = 0.78
-all_text_vertical_shift_ratio = 0.85
+all_text_vertical_shift_ratio = 1.0
+translation_font_size = 12.0
 toggle_hotkey = "ctrl"
 
 [manual_rules]
@@ -123,7 +136,8 @@ all text モードで少し透けさせる例:
 ```toml
 [overlay]
 tooltip_opacity = 0.55
-all_text_vertical_shift_ratio = 0.85
+all_text_vertical_shift_ratio = 1.0
+translation_font_size = 12.0
 toggle_hotkey = "ctrl"
 ```
 
@@ -132,6 +146,13 @@ Shift キーでモード切替:
 ```toml
 [overlay]
 toggle_hotkey = "shift"
+```
+
+日本語を少し小さめに表示:
+
+```toml
+[overlay]
+translation_font_size = 11.0
 ```
 
 検出テキストを手動翻訳ルールへ収集:
