@@ -534,6 +534,7 @@ def _tile_hover_rect_for_block(
     block: TextBlock,
     client_rect: QRect,
     tile_size: tuple[int, int] | None,
+    screen_scale: tuple[float, float] | None = None,
     pad_x_tiles: int = 0,
     pad_y_tiles: int = 0,
 ) -> QRect | None:
@@ -544,15 +545,24 @@ def _tile_hover_rect_for_block(
     if tile_w <= 0 or tile_h <= 0:
         return None
 
+    scale_x = 1.0
+    scale_y = 1.0
+    if screen_scale is not None:
+        raw_scale_x, raw_scale_y = screen_scale
+        if raw_scale_x > 0:
+            scale_x = raw_scale_x
+        if raw_scale_y > 0:
+            scale_y = raw_scale_y
+
     left_tile = min(span.x_start for span in block.spans) - pad_x_tiles
     right_tile = max(span.x_end for span in block.spans) + pad_x_tiles
     top_tile = min(span.y for span in block.spans) - pad_y_tiles
     bottom_tile = max(span.y for span in block.spans) + pad_y_tiles
 
-    left = client_rect.left() + left_tile * tile_w
-    top = client_rect.top() + top_tile * tile_h
-    right = client_rect.left() + (right_tile + 1) * tile_w
-    bottom = client_rect.top() + (bottom_tile + 1) * tile_h
+    left = client_rect.left() + int(round(left_tile * tile_w * scale_x))
+    top = client_rect.top() + int(round(top_tile * tile_h * scale_y))
+    right = client_rect.left() + int(round((right_tile + 1) * tile_w * scale_x))
+    bottom = client_rect.top() + int(round((bottom_tile + 1) * tile_h * scale_y))
 
     left = max(client_rect.left(), left)
     top = max(client_rect.top(), top)
@@ -1640,7 +1650,12 @@ class OverlayController(QObject):
         if pixel_rect is not None:
             return pixel_rect
 
-        tile_rect = _tile_hover_rect_for_block(block, client_rect, self._tile_size)
+        tile_rect = _tile_hover_rect_for_block(
+            block,
+            client_rect,
+            self._tile_size,
+            screen_scale=self._screen_scale,
+        )
         if tile_rect is not None:
             return tile_rect
 
@@ -1676,18 +1691,14 @@ class OverlayController(QObject):
                 max(1, int(bottom - top)),
             )
 
-        if self._tile_size is not None and block.spans:
-            tile_w, tile_h = self._tile_size
-            left_tile = min(span.x_start for span in block.spans)
-            right_tile = max(span.x_end for span in block.spans)
-            top_tile = min(span.y for span in block.spans)
-            bottom_tile = max(span.y for span in block.spans)
-            return QRect(
-                client_rect.left() + left_tile * tile_w,
-                client_rect.top() + top_tile * tile_h,
-                max(1, (right_tile - left_tile + 1) * tile_w),
-                max(1, (bottom_tile - top_tile + 1) * tile_h),
-            )
+        tile_rect = _tile_hover_rect_for_block(
+            block,
+            client_rect,
+            self._tile_size,
+            screen_scale=self._screen_scale,
+        )
+        if tile_rect is not None:
+            return tile_rect
 
         if block.spans:
             full_frame = self._source_frame if self._source_frame else [(block, block.text)]
