@@ -692,8 +692,8 @@ class CursorOverlay(QWidget):
         self._prepare_text(text)
         return max(1, self.width()), max(1, self.height())
 
-    def show_prepared_at(self, x: int, y: int, client_rect: QRect) -> None:
-        self._show_at(x, y, client_rect)
+    def show_prepared_at(self, x: int, y: int, client_rect: QRect) -> QRect:
+        return self._show_at(x, y, client_rect)
 
     def _prepare_text(self, text: str) -> None:
         metrics = QFontMetrics(self._label.font())
@@ -720,7 +720,7 @@ class CursorOverlay(QWidget):
         preferred_y: int,
         client_rect: QRect,
         fallback_x: int | None = None,
-    ) -> None:
+    ) -> QRect:
         if not self.isVisible():
             self.show()
             self.raise_()
@@ -745,6 +745,7 @@ class CursorOverlay(QWidget):
         if self._last_position != (x, y):
             self._move_native(x, y)
             self._last_position = (x, y)
+        return QRect(x, y, native_width, native_height)
 
     def _apply_click_through(self) -> None:
         try:
@@ -1159,19 +1160,19 @@ class OverlayController(QObject):
         for cluster in final_clusters:
             overlay = self._all_text_overlays[shown]
             cluster_text = str(cluster["text"])
-            overlay.prepare_translation(cluster_text)
+            prepared_width, prepared_height = overlay.prepare_translation(cluster_text)
             preferred_rect = self._overlay_rect_for_source_rect(
                 cluster["source_rect"],
-                overlay.width(),
-                overlay.height(),
+                prepared_width,
+                prepared_height,
                 client_rect,
             )
             cluster_rect = self._stagger_all_text_cluster_rect(
+                overlay,
                 preferred_rect,
                 placed_cluster_rects,
                 client_rect,
             )
-            overlay.show_prepared_at(cluster_rect.x(), cluster_rect.y(), client_rect)
             placed_cluster_rects.append(cluster_rect)
             shown += 1
 
@@ -1376,41 +1377,45 @@ class OverlayController(QObject):
 
     def _stagger_all_text_cluster_rect(
         self,
+        overlay: CursorOverlay,
         preferred_rect: QRect,
         placed_rects: list[QRect],
         client_rect: QRect,
     ) -> QRect:
         rect = QRect(preferred_rect)
+        actual_rect = QRect(rect)
         for _ in range(8):
+            actual_rect = overlay.show_prepared_at(rect.x(), rect.y(), client_rect)
             overlapping = [
                 other
                 for other in placed_rects
-                if other.intersects(rect)
-                and other.left() < rect.right()
-                and rect.left() < other.right()
+                if other.intersects(actual_rect)
+                and other.left() < actual_rect.right()
+                and actual_rect.left() < other.right()
             ]
             if not overlapping:
-                return rect
+                return actual_rect
 
             next_y = max(
                 other.top() + max(
+                    ALL_TEXT_GAP,
                     ALL_TEXT_MIN_VERTICAL_SHIFT,
                     int(other.height() * self._all_text_vertical_shift_ratio),
                 )
                 for other in overlapping
             )
             shifted = _clamp_overlay_rect(
-                rect.x(),
+                actual_rect.x(),
                 next_y,
-                rect.width(),
-                rect.height(),
+                actual_rect.width(),
+                actual_rect.height(),
                 client_rect,
             )
             if shifted == rect:
-                return rect
+                return actual_rect
             rect = shifted
 
-        return rect
+        return actual_rect
 
     def _display_source_frame(self) -> list[tuple[TextBlock, str]]:
         if not self._source_frame:
@@ -1674,6 +1679,7 @@ class OverlayController(QObject):
     def _hide_all_overlays(self) -> None:
         self._overlay.hide()
         self._hide_all_text_overlays()
+        self._last_all_text_render_signature = None
 
     def _poll_ctrl_key(self) -> None:
         ctrl_down = _is_toggle_hotkey_down(self._toggle_hotkey)
