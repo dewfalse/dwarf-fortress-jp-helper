@@ -51,6 +51,7 @@ ALL_TEXT_MAX_SOURCE_VERTICAL_GAP = 48
 ALL_TEXT_MAX_MERGE_SOURCE_TEXT_LENGTH = 80
 ALL_TEXT_MIN_VERTICAL_SHIFT = 4
 DEFAULT_TOOLTIP_OPACITY = 0.78
+DEFAULT_TRANSLATION_FONT_SIZE = 12.0
 
 
 class OverlayMode(Enum):
@@ -404,6 +405,10 @@ def _clamp_all_text_vertical_shift_ratio(value: float) -> float:
     return max(0.1, min(2.0, value))
 
 
+def _clamp_translation_font_size(value: float) -> float:
+    return max(8.0, min(24.0, value))
+
+
 def _find_df_window() -> int | None:
     matches: list[int] = []
 
@@ -604,6 +609,7 @@ class CursorOverlay(QWidget):
         self,
         tooltip_opacity: float = DEFAULT_TOOLTIP_OPACITY,
         compact: bool = False,
+        translation_font_size: float = DEFAULT_TRANSLATION_FONT_SIZE,
     ) -> None:
         super().__init__(
             None,
@@ -624,6 +630,7 @@ class CursorOverlay(QWidget):
         self._padding_x = 8 if compact else 12
         self._border_radius = 7 if compact else 9
         self._width_padding = self._padding_x * 2 + (14 if compact else 6)
+        self._translation_font_size = _clamp_translation_font_size(translation_font_size)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -636,6 +643,13 @@ class CursorOverlay(QWidget):
         self._label = QLabel()
         self._label.setWordWrap(True)
         self._label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        label_font = QFont()
+        if hasattr(label_font, "setFamilies"):
+            label_font.setFamilies(["Meiryo UI", "Yu Gothic UI", "MS UI Gothic"])
+        else:
+            label_font.setFamily("Meiryo UI")
+        label_font.setPixelSize(max(1, int(round(self._translation_font_size))))
+        self._label.setFont(label_font)
         layout.addWidget(self._label)
 
         metrics = QFontMetrics(self._label.font())
@@ -667,8 +681,6 @@ class CursorOverlay(QWidget):
                 border: 1px solid rgba(255, 255, 255, {border_alpha});
                 border-radius: {self._border_radius}px;
                 padding: {self._padding_y}px {self._padding_x}px;
-                font-family: 'Meiryo UI', 'Yu Gothic UI', sans-serif;
-                font-size: 13px;
             }}
             """
         )
@@ -826,11 +838,17 @@ class OverlayController(QObject):
         self._all_text_vertical_shift_ratio = _clamp_all_text_vertical_shift_ratio(
             getattr(self._config, "all_text_vertical_shift_ratio", DEFAULT_ALL_TEXT_VERTICAL_SHIFT_RATIO)
         )
+        self._translation_font_size = _clamp_translation_font_size(
+            getattr(self._config, "translation_font_size", DEFAULT_TRANSLATION_FONT_SIZE)
+        )
         self._toggle_hotkey = _normalize_toggle_hotkey(getattr(self._config, "toggle_hotkey", "ctrl"))
         self._toggle_hotkey_label = _toggle_hotkey_display_name(self._toggle_hotkey)
         self._translator = Translator()
         self._reader = PipeReader(on_frame=self.on_frame)
-        self._overlay = CursorOverlay(self._tooltip_opacity)
+        self._overlay = CursorOverlay(
+            self._tooltip_opacity,
+            translation_font_size=self._translation_font_size,
+        )
         self._all_text_overlays: list[CursorOverlay] = []
         self._raw_queue: queue.Queue[list[TextBlock]] = queue.Queue(maxsize=4)
         self._result_queue: queue.Queue[_TranslatedFrame] = queue.Queue(maxsize=4)
@@ -1687,7 +1705,13 @@ class OverlayController(QObject):
 
     def _ensure_all_text_overlays(self, count: int) -> None:
         while len(self._all_text_overlays) < count:
-            self._all_text_overlays.append(CursorOverlay(self._tooltip_opacity, compact=True))
+            self._all_text_overlays.append(
+                CursorOverlay(
+                    self._tooltip_opacity,
+                    compact=True,
+                    translation_font_size=self._translation_font_size,
+                )
+            )
 
     def _hide_all_text_overlays(self) -> None:
         for overlay in self._all_text_overlays:
