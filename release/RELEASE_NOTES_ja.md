@@ -6,6 +6,9 @@ DFJP は、Windows 版 Dwarf Fortress 向けの日本語プレイ補助ツール
 
 この配布版は Python が入っていない環境でも使えます。
 
+このリリースの配布 ZIP には、チュートリアル付近までの手動翻訳を含んだ
+`dfjp-data/manual_translation_rules.tsv` を同梱しています。
+
 ## スクリーンショット
 
 ![Dwarf Fortress と DFJP オーバーレイ表示](https://raw.githubusercontent.com/dewfalse/dwarf-fortress-jp-helper/main/screenshot_02.png)
@@ -157,3 +160,14 @@ collect_detected_text = true
   - デバッグログ
 
 翻訳エンジンや翻訳先言語を変えたあとに古い訳文が残る場合は、`dfjp-data/translation_cache.json` を削除してください。
+
+## ライセンス関連
+
+- `LICENSE`
+  - DFJP 本体の MIT License
+- `THIRD_PARTY_LICENSES/`
+  - 同梱している Python ランタイム・PySide6・各種 Python パッケージのライセンス関連ファイル
+- `THIRD_PARTY_LICENSES/THIRD_PARTY_LICENSES.md`
+  - 同梱ライセンス一覧
+
+配布版の GUI ランタイムは、ライセンス整理をしやすいよう PySide6 ベースにしています。

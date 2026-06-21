@@ -12,9 +12,9 @@ import time
 import win32api
 import win32con
 import win32gui
-from PyQt6.QtCore import QObject, QPoint, QRect, QTimer, Qt
-from PyQt6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPixmap
-from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QSystemTrayIcon, QVBoxLayout, QWidget
+from PySide6.QtCore import QObject, QPoint, QRect, QTimer, Qt
+from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication, QLabel, QMenu, QSystemTrayIcon, QVBoxLayout, QWidget
 
 from config import load_config
 from pipe_reader import (

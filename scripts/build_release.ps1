@@ -116,6 +116,7 @@ $MainScript = Join-Path $TranslatorDir "main.py"
 $DllPath = Join-Path $HookDir "build\Release\dfhooks.dll"
 $ManualRulesPath = Join-Path $TranslatorDir "manual_translation_rules.tsv"
 $ManualRulesTemplatePath = Join-Path $TranslatorDir "manual_translation_rules.template.tsv"
+$ThirdPartyLicensesScript = Join-Path $RepoRoot "tools\collect_third_party_licenses.py"
 $UvExe = Resolve-UvExe -ExplicitPath $UvPath
 $CmdFile = Get-ChildItem -LiteralPath $ReleaseDir -Filter "DFJP*.cmd" | Select-Object -First 1
 
@@ -202,6 +203,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "dfjp-data") | Ou
 Copy-Item -Path (Join-Path $OnedirDir "*") -Destination $StageDir -Recurse
 Copy-Item -LiteralPath $DllPath -Destination (Join-Path $StageDir "dfhooks.dll")
 Copy-Item -LiteralPath $CmdFile.FullName -Destination $StageDir
+Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination (Join-Path $StageDir "LICENSE")
 Copy-Item -LiteralPath (Join-Path $ReleaseDir "README_DFJP.txt") -Destination $StageDir
 Copy-Item -LiteralPath (Join-Path $TranslatorDir "config.toml") `
     -Destination (Join-Path $StageDir "dfjp-data\config.toml")
@@ -217,6 +219,15 @@ if (Test-Path -LiteralPath $ManualRulesPath -PathType Leaf) {
 } else {
     Copy-Item -LiteralPath $ManualRulesTemplatePath `
         -Destination (Join-Path $StageDir "dfjp-data\manual_translation_rules.tsv")
+}
+
+if (-not (Test-Path -LiteralPath $ThirdPartyLicensesScript -PathType Leaf)) {
+    throw "Third-party license collector not found: $ThirdPartyLicensesScript"
+}
+& $UvExe run --project $TranslatorDir --with pyinstaller python $ThirdPartyLicensesScript `
+    --output (Join-Path $StageDir "THIRD_PARTY_LICENSES")
+if ($LASTEXITCODE -ne 0) {
+    throw "Third-party license collection failed."
 }
 
 Write-Host "[3/3] Creating ZIP..."

@@ -151,6 +151,18 @@ Shift キーで切り替える例
 - \r = 復帰
 - \\ = バックスラッシュ
 
+ライセンス
+----------
+- LICENSE
+    DFJP 本体の MIT License
+
+- THIRD_PARTY_LICENSES\
+    同梱している Python ランタイム・PySide6・その他 Python パッケージの
+    ライセンス関連ファイル一式
+
+- THIRD_PARTY_LICENSES\THIRD_PARTY_LICENSES.md
+    同梱ライセンス一覧
+
 生成されるファイル
 ------------------
 - dfint-data\offsets-dfjp-auto.toml

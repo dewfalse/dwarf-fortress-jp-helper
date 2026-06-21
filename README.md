@@ -27,7 +27,7 @@ Windows 版 Dwarf Fortress 向けの日本語プレイ補助ツールです。
 - `hook/`
   - `dfhooks.dll` をビルドする C++ コード
 - `translator/`
-  - PyQt6 ベースの翻訳表示アプリ
+  - PySide6 ベースの翻訳表示アプリ
 - `tools/detect_offsets.py`
   - Dwarf Fortress 更新時の RVA 自動検出
 - `scripts/build_release.ps1`
@@ -238,6 +238,16 @@ powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1
 出力:
 
 - `dist/DFJP.zip`
+
+配布 ZIP には次のライセンス関連ファイルも含まれます。
+
+- `LICENSE`
+  - DFJP 自体の MIT License
+- `THIRD_PARTY_LICENSES/`
+  - 同梱ランタイム・Python パッケージ・補足ライセンス文書
+  - `THIRD_PARTY_LICENSES.md` に一覧を出力
+
+ライセンス面の整理のため、配布版の GUI ランタイムは PyQt6 ではなく PySide6 を使用しています。
 
 ## License
 

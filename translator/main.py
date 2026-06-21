@@ -154,7 +154,7 @@ def configure_dpi_awareness() -> None:
 def run_app(argv: list[str]) -> int:
     configure_dpi_awareness()
 
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication
 
     from gui import OverlayController
 
