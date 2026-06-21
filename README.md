@@ -81,7 +81,7 @@ Windows 版 Dwarf Fortress 向けの日本語プレイ補助ツールです。
   - `"ctrl"` / `"shift"` / `"alt"`
   - デフォルトは `"ctrl"`
 - `manual_rules.collect_detected_text`
-  - `true` にすると、ゲーム中に検出したテキストを `manual_translation_rules.tsv` に `exact<TAB>原文<TAB>` の形で追記
+  - `true` にすると、ゲーム中に検出したテキストを実行中の `manual_translation_rules.tsv` に `exact<TAB>原文<TAB>` の形で追記
   - 手動翻訳候補の収集用。デフォルトは `false`
 - `debug.log`
   - `true` のとき、詳細ログを `debug.log` に出力
@@ -164,10 +164,14 @@ collect_detected_text = true
 
 ## 手動翻訳ルール
 
-手動翻訳ルールファイル:
+手動翻訳ルール関連ファイル:
 
-- 配布版: `dfjp-data/manual_translation_rules.tsv`
-- ソース実行時: `translator/manual_translation_rules.tsv`
+- 配布 ZIP: `dfjp-data/manual_translation_rules.tsv`
+  - チュートリアルまでの手動翻訳入りファイルを同梱
+- GitHub ソース: `translator/manual_translation_rules.template.tsv`
+  - 骨組みだけを保持するテンプレート
+- ソース実行時に生成: `translator/manual_translation_rules.tsv`
+  - 初回起動時にテンプレートから自動生成
 
 1 行 1 ルールの TSV 形式です。
 

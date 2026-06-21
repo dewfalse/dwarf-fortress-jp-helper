@@ -10,6 +10,6 @@
 #   \r = carriage return
 #   \\ = backslash
 #
-# examples:
-# exact	Start new game in existing world	既存の世界で新しいゲームを始める
-# regex	^(\d+)(?:st|nd|rd|th) Slate$	\1番目のスレート
+# examples (remove leading # to enable):
+# exact\tStart new game in existing world\t既存の世界で新しいゲームを始める
+# regex\t^(\d+)(?:st|nd|rd|th) Slate$\t\1番目のスレート

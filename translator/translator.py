@@ -11,7 +11,7 @@ import threading
 from typing import Protocol
 
 from config import Config, load_config
-from runtime_paths import DEFAULT_MANUAL_RULES_TSV, cache_path, manual_rules_path
+from runtime_paths import cache_path, initialize_manual_rules_file, manual_rules_path
 
 try:
     from deep_translator import GoogleTranslator
@@ -131,6 +131,7 @@ class ManualRuleStore:
         self._exact_rules: dict[str, str] = {}
         self._pending_exact_sources: set[str] = set()
         self._regex_rules: list[RegexManualRule] = []
+        self._ensure_file_exists()
         self.reload()
 
     @property
@@ -138,10 +139,7 @@ class ManualRuleStore:
         return self._path
 
     def _ensure_file_exists(self) -> Path:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        if not self._path.exists():
-            self._path.write_text(DEFAULT_MANUAL_RULES_TSV, encoding="utf-8")
-        return self._path
+        return initialize_manual_rules_file(self._path)
 
     def reload(self) -> None:
         exact_rules: dict[str, str] = {}

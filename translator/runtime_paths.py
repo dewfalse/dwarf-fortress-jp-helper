@@ -7,6 +7,7 @@ APP_NAME = "DFJP"
 DATA_DIR_NAME = "dfjp-data"
 OFFSETS_FILE_NAME = "offsets-dfjp-auto.toml"
 MANUAL_RULES_FILE_NAME = "manual_translation_rules.tsv"
+MANUAL_RULES_TEMPLATE_FILE_NAME = "manual_translation_rules.template.tsv"
 DF_EXE_NAME = "Dwarf Fortress.exe"
 HOOK_DLL_NAME = "dfhooks.dll"
 
@@ -45,7 +46,7 @@ collect_detected_text = false
 log = true
 """
 
-DEFAULT_MANUAL_RULES_TSV = """# DFJP manual translation rules
+DEFAULT_MANUAL_RULES_TEMPLATE_TSV = """# DFJP manual translation rules
 # 1 line = 1 rule
 # exact<TAB>source<TAB>target
 # regex<TAB>pattern<TAB>replacement
@@ -57,7 +58,7 @@ DEFAULT_MANUAL_RULES_TSV = """# DFJP manual translation rules
 #   \\r = carriage return
 #   \\\\ = backslash
 #
-# examples:
+# examples (remove leading # to enable):
 # exact\tStart new game in existing world\t既存の世界で新しいゲームを始める
 # regex\t^(\\d+)(?:st|nd|rd|th) Slate$\t\\1番目のスレート
 """
@@ -117,11 +118,29 @@ def manual_rules_path() -> Path:
     return data_dir() / MANUAL_RULES_FILE_NAME
 
 
+def manual_rules_template_path() -> Path:
+    ensure_data_dir()
+    return data_dir() / MANUAL_RULES_TEMPLATE_FILE_NAME
+
+
+def load_manual_rules_template_text() -> str:
+    path = manual_rules_template_path()
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return DEFAULT_MANUAL_RULES_TEMPLATE_TSV
+
+
+def initialize_manual_rules_file(path: Path | None = None) -> Path:
+    output_path = path or manual_rules_path()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not output_path.exists():
+        output_path.write_text(load_manual_rules_template_text(), encoding="utf-8")
+    return output_path
+
+
 def ensure_manual_rules_file() -> Path:
-    path = manual_rules_path()
-    if not path.exists():
-        path.write_text(DEFAULT_MANUAL_RULES_TSV, encoding="utf-8")
-    return path
+    return initialize_manual_rules_file()
 
 
 def debug_log_path() -> Path:

@@ -114,6 +114,8 @@ $ZipPath = Join-Path $DistDir "$OutputName.zip"
 $OnedirDir = Join-Path $PyInstallerDist "DFJP"
 $MainScript = Join-Path $TranslatorDir "main.py"
 $DllPath = Join-Path $HookDir "build\Release\dfhooks.dll"
+$ManualRulesPath = Join-Path $TranslatorDir "manual_translation_rules.tsv"
+$ManualRulesTemplatePath = Join-Path $TranslatorDir "manual_translation_rules.template.tsv"
 $UvExe = Resolve-UvExe -ExplicitPath $UvPath
 $CmdFile = Get-ChildItem -LiteralPath $ReleaseDir -Filter "DFJP*.cmd" | Select-Object -First 1
 
@@ -203,8 +205,19 @@ Copy-Item -LiteralPath $CmdFile.FullName -Destination $StageDir
 Copy-Item -LiteralPath (Join-Path $ReleaseDir "README_DFJP.txt") -Destination $StageDir
 Copy-Item -LiteralPath (Join-Path $TranslatorDir "config.toml") `
     -Destination (Join-Path $StageDir "dfjp-data\config.toml")
-Copy-Item -LiteralPath (Join-Path $TranslatorDir "manual_translation_rules.tsv") `
-    -Destination (Join-Path $StageDir "dfjp-data\manual_translation_rules.tsv")
+if (-not (Test-Path -LiteralPath $ManualRulesTemplatePath -PathType Leaf)) {
+    throw "Manual rules template not found: $ManualRulesTemplatePath"
+}
+Copy-Item -LiteralPath $ManualRulesTemplatePath `
+    -Destination (Join-Path $StageDir "dfjp-data\manual_translation_rules.template.tsv")
+
+if (Test-Path -LiteralPath $ManualRulesPath -PathType Leaf) {
+    Copy-Item -LiteralPath $ManualRulesPath `
+        -Destination (Join-Path $StageDir "dfjp-data\manual_translation_rules.tsv")
+} else {
+    Copy-Item -LiteralPath $ManualRulesTemplatePath `
+        -Destination (Join-Path $StageDir "dfjp-data\manual_translation_rules.tsv")
+}
 
 Write-Host "[3/3] Creating ZIP..."
 Compress-Archive -Path (Join-Path $StageDir "*") -DestinationPath $ZipPath

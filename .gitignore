@@ -22,6 +22,7 @@ venv/
 
 # ゲームプレイで蓄積される翻訳キャッシュ（環境ごとに異なるため除外）
 translator/translation_cache.json
+translator/manual_translation_rules.tsv
 translator/debug.log
 tmp_*.txt
 tmp_*.xml

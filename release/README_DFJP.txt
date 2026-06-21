@@ -122,6 +122,9 @@ Shift キーで切り替える例
 --------------
 ファイル:
   dfjp-data\manual_translation_rules.tsv
+    配布 ZIP にはチュートリアルまでの手動翻訳入りファイルを同梱
+  dfjp-data\manual_translation_rules.template.tsv
+    manual_translation_rules.tsv を作り直すためのテンプレート
 
 形式:
 
@@ -157,7 +160,10 @@ Shift キーで切り替える例
     翻訳キャッシュ
 
 - dfjp-data\manual_translation_rules.tsv
-    手動翻訳ルール
+    手動翻訳ルール（配布 ZIP ではチュートリアルまでの手動翻訳入り）
+
+- dfjp-data\manual_translation_rules.template.tsv
+    manual_translation_rules.tsv 再生成用テンプレート
 
 - dfjp-data\debug.log
     config.toml の [debug] log = true のときだけ出力

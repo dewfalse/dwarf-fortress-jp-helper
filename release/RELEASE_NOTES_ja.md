@@ -8,7 +8,7 @@ DFJP は、Windows 版 Dwarf Fortress 向けの日本語プレイ補助ツール
 
 ## スクリーンショット
 
-![Dwarf Fortress と DFJP オーバーレイ表示](../screenshot_02.png)
+![Dwarf Fortress と DFJP オーバーレイ表示](https://raw.githubusercontent.com/dewfalse/dwarf-fortress-jp-helper/main/screenshot_02.png)
 
 ## インストール方法
 
@@ -150,7 +150,9 @@ collect_detected_text = true
 - `dfjp-data/translation_cache.json`
   - 翻訳キャッシュ
 - `dfjp-data/manual_translation_rules.tsv`
-  - 手動翻訳ルール
+  - 手動翻訳ルール（配布 ZIP ではチュートリアルまでの手動翻訳入り）
+- `dfjp-data/manual_translation_rules.template.tsv`
+  - `manual_translation_rules.tsv` 再生成用テンプレート
 - `dfjp-data/debug.log`
   - デバッグログ
 
